@@ -17,7 +17,7 @@ import numpy as np
 import yaml
 
 class Map():
-    def __init__(self, map:Union[np.ndarray,str], dilate_size:int=7,downsize_factor:int=None):
+    def __init__(self, map:Union[np.ndarray,str]):
         if isinstance(map, np.ndarray):
             self.map = np.clip(map, 0, None).astype(np.uint8)
         elif isinstance(map, str):
@@ -25,11 +25,7 @@ class Map():
             self.__open_map(map)
         else: 
             raise Exception("Map.__init__: invalid map type")
-        self.dilate(dilate_size)
-        if downsize_factor is not None:
-            self.map = cv2.resize(self.map, (self.map.shape[0]//downsize_factor, self.map.shape[1]//downsize_factor), interpolation=cv2.INTER_NEAREST)
-        self.downsize_factor = downsize_factor
-        
+    
     def get_map(self):
         return self.map
         
@@ -92,24 +88,20 @@ class Map():
         plt.show()
 
 class AStar():
-    def __init__(self,map:Map, start:Tuple[int,int], end:Tuple[int,int]):
-        self.m:Map = map
-        self.map:np.ndarray = map.get_map()
+    def __init__(self,map:Image, start:Tuple[int,int], end:Tuple[int,int]):
+        self.map:Image = map
         self.q:List[Tuple(int,int)] = []
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
         self.end = end
         self.start = start
-        sqrt2 = 17
-        one = 12
-        three = 21
-        self.dirs = np.array([
-            [1, 1, sqrt2], [1, -1, sqrt2], [-1, 1, sqrt2], [-1, -1, sqrt2],
-            [1, 0, one], [0, 1, one], [-1, 0, one], [0, -1, one],
-            # [1,2,three],[2,1,three],[-1,2,three],[-2,1,three],[1,-2,three],[2,-1,three],[-1,-2,three],[-2,-1,three]
-        ]).astype(int)
-        self.map_shape = np.array(self.map.shape)
+        # sqrt2 = np.sqrt(2)
+        # self.dirs = np.array([
+        #     [1, 1, sqrt2], [1, -1, sqrt2], [-1, 1, sqrt2], [-1, -1, sqrt2],
+        #     [1, 0, 1], [0, 1, 1], [-1, 0, 1], [0, -1, 1]
+        # ]).astype(int)
+        # self.map_shape = np.array(self.map.shape)
 
     def __get_f_score(self, node:Tuple[int,int]) -> float:
         if node not in self.dist:
@@ -118,50 +110,50 @@ class AStar():
             self.h[node] = (self.end[0]-node[0])**2 + (self.end[1]-node[1])**2
         return self.dist[node]**2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
 
-    # def get_children(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
-    #     sqrt2 = np.sqrt(2)
-    #     weights = np.array([sqrt2, sqrt2, sqrt2, sqrt2, 1, 1, 1, 1])
-    #     # Define the relative coordinates of the 8 neighboring pixels
-    #     dirs = np.array([
-    #         [1, 1], [1, -1], [-1, 1], [-1, -1], 
-    #         [1, 0], [0, 1], [-1, 0], [0, -1]
-    #     ])
-    #     # Calculate the absolute coordinates of the neighboring pixels
-    #     coords = np.array(coord) + dirs
-    #     # Check if the coordinates are within the image bounds
-    #     valid_mask = np.all((coords >= 0) & (coords < np.array(self.map.shape)), axis=1)
-    #     # Extract the in-bound neighboring pixel coordinates
-    #     coords = coords[valid_mask]
-    #     # Filter out the non-zero neighbors
-    #     mask = (self.map[coords[:, 0], coords[:, 1]] == 0)
-    #     # Return the valid neighbors and their corresponding weights
-    #     return [tuple(item) for item in coords[mask]], weights[valid_mask][mask]
-    # def get_children(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
-    #     sqrt2 = np.sqrt(2)
-    #     weights = np.array([sqrt2, 1, sqrt2, 1, 1, sqrt2, 1, sqrt2])
-    #     # Define the relative coordinates of the 8 neighboring pixels
-    #     relative_coords = np.array([
-    #         [-1, -1],
-    #         [-1,  0],
-    #         [-1,  1],
-    #         [ 0, -1],
-    #         [ 0,  1],
-    #         [ 1, -1],
-    #         [ 1,  0],
-    #         [ 1,  1]
-    #     ])
-    #     # Calculate the absolute coordinates of the neighboring pixels
-    #     neighbors = np.array(coord) + relative_coords
-    #     # Check if the coordinates are within the image bounds
-    #     in_bounds = np.all((neighbors >= 0) & (neighbors < np.array(self.map.shape)), axis=1)
-    #     # Extract the in-bound neighboring pixel coordinates
-    #     valid_neighbors = neighbors[in_bounds]
-    #     # Get the values of the in-bound neighboring pixels in the binary image
-    #     neighbor_values = self.map[valid_neighbors[:, 0], valid_neighbors[:, 1]]
-    #     # Filter out the non-zero neighbors
-    #     non_zero_mask = neighbor_values == 0
-    #     # Return the valid neighbors and their corresponding weights
-    #     return [tuple(item) for item in valid_neighbors[non_zero_mask]], weights[in_bounds][non_zero_mask]
+    def get_children(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
+        sqrt2 = np.sqrt(2)
+        weights = np.array([sqrt2, sqrt2, sqrt2, sqrt2, 1, 1, 1, 1])
+        # Define the relative coordinates of the 8 neighboring pixels
+        dirs = np.array([
+            [1, 1], [1, -1], [-1, 1], [-1, -1], 
+            [1, 0], [0, 1], [-1, 0], [0, -1]
+        ])
+        # Calculate the absolute coordinates of the neighboring pixels
+        coords = np.array(coord) + dirs
+        # Check if the coordinates are within the image bounds
+        valid_mask = np.all((coords >= 0) & (coords < np.array(self.map.shape)), axis=1)
+        # Extract the in-bound neighboring pixel coordinates
+        coords = coords[valid_mask]
+        # Filter out the non-zero neighbors
+        mask = (self.map[coords[:, 0], coords[:, 1]] == 0)
+        # Return the valid neighbors and their corresponding weights
+        return [tuple(item) for item in coords[mask]], weights[valid_mask][mask]
+    def get_chidlren(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
+        sqrt2 = np.sqrt(2)
+        weights = np.array([sqrt2, 1, sqrt2, 1, 1, sqrt2, 1, sqrt2])
+        # Define the relative coordinates of the 8 neighboring pixels
+        relative_coords = np.array([
+            [-1, -1],
+            [-1,  0],
+            [-1,  1],
+            [ 0, -1],
+            [ 0,  1],
+            [ 1, -1],
+            [ 1,  0],
+            [ 1,  1]
+        ])
+        # Calculate the absolute coordinates of the neighboring pixels
+        neighbors = np.array(coord) + relative_coords
+        # Check if the coordinates are within the image bounds
+        in_bounds = np.all((neighbors >= 0) & (neighbors < np.array(self.map.shape)), axis=1)
+        # Extract the in-bound neighboring pixel coordinates
+        valid_neighbors = neighbors[in_bounds]
+        # Get the values of the in-bound neighboring pixels in the binary image
+        neighbor_values = self.map[valid_neighbors[:, 0], valid_neighbors[:, 1]]
+        # Filter out the non-zero neighbors
+        non_zero_mask = neighbor_values == 0
+        # Return the valid neighbors and their corresponding weights
+        return [tuple(item) for item in valid_neighbors[non_zero_mask]], weights[in_bounds][non_zero_mask]
     
     # def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
     #     sqrt2 = np.sqrt(2)
@@ -190,16 +182,19 @@ class AStar():
     #     print(valid_coords[mask].shape)
     #     return valid_coords[mask] #, weights[valid_mask][mask]
     
-    def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
-        # Calculate the absolute coordinates of the neighboring pixels
-        coords = np.array(coord + (0,)) + self.dirs
+    # def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
+    #     # Calculate the absolute coordinates of the neighboring pixels
+    #     coords = np.array(coord + (0,)) + self.dirs
         
-        # Check if the coordinates are within the image bounds
-        in_bounds_mask = np.all((coords[:, :2] >= 0) & (coords[:, :2] < self.map_shape), axis=1)
+    #     # Check if the coordinates are within the image bounds
+    #     in_bounds = (coords[:, :2] >= 0) & (coords[:, :2] < self.map_shape)
+    #     in_bounds_mask = np.all(in_bounds, axis=1)
 
-        # Filter out the non-zero neighbors and apply the in_bounds_mask
-        zero_neighbors = self.map[coords[in_bounds_mask, 0], coords[in_bounds_mask, 1]] == 0
-        return coords[in_bounds_mask][zero_neighbors]
+    #     # Filter out the non-zero neighbors and apply the in_bounds_mask
+    #     zero_neighbors = self.map[coords[in_bounds_mask, 0].astype(int), coords[in_bounds_mask, 1].astype(int)] == 0
+    #     valid_coords = coords[in_bounds_mask][zero_neighbors]
+
+    #     return valid_coords
     
     # def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
     #     coords = np.array(coord + (0,)) + self.dirs
@@ -215,15 +210,14 @@ class AStar():
             u:Tuple[int,int] = heapq.heappop(self.q)[1]          # get node with the lowest f score from priority queue
             if u[0] == en[0] and u[1] == en[1]:                 # if it's the end node, done
                 break
-            # children, weights = self.get_children(u)  # get the children of the node
-            # for c,w in zip(children,weights):      # for each connected child of the node:
-            for (cx,cy,w) in self.get_children(u):
-                c = (cx,cy)
+            children, weights = self.get_children(u)  # get the children of the node
+            for c,w in zip(children,weights):      # for each connected child of the node:
+                # c = (cx,cy)
                 if u not in self.dist:
                     self.dist[u] = np.Inf
                 if c not in self.dist:
                     self.dist[c] = np.Inf
-                new_dist = self.dist[u] + w/12  # new distance including this child node in path
+                new_dist = self.dist[u] + w  # new distance including this child node in path
                 if new_dist < self.dist[c]:  # if the new distance is better than the old one:
                     self.dist[c] = new_dist  # add new dist of c to the dictionary
                     self.via[c] = u     # add new node c with parent reference u
@@ -264,6 +258,4 @@ class AStar():
             rospy.loginfo('No path found, outside bounds')
             return None, np.Inf
         path = self.collapse_path(path)
-        if self.m.downsize_factor is not None:
-            path = np.array(path) * self.m.downsize_factor
         return path,dist
