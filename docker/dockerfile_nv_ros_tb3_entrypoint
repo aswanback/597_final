@@ -1,0 +1,9 @@
+FROM edisonprincehan/nv_ros_tb3:v3
+
+COPY ./run.sh /
+
+RUN chmod +x /run.sh
+
+ENTRYPOINT ["/run.sh"]
+
+CMD ["task_id"]

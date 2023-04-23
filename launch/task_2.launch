@@ -1,0 +1,44 @@
+<launch>
+  <!-- Default argument definition to configure navigation stack -->
+  <arg name="x_pos" default="0.0"/>
+  <arg name="y_pos" default="0.0"/>
+  <arg name="z_pos" default="0.0"/>
+  
+  <arg name="x_guess" default="0.0"/>
+  <arg name="y_guess" default="0.0"/>
+
+  <arg name="map_file" default="$(find final_project)/maps/map.yaml" />
+  
+  <arg name="open_rviz" default="true"/>
+  
+  <!-- Launch robot and world -->
+  <include file="$(find final_project)/launch/ME597_final_project.launch">
+    <arg name="x_pos" value="$(arg x_pos)"/>
+    <arg name="y_pos" value="$(arg y_pos)"/>
+    <arg name="z_pos" value="$(arg z_pos)"/>
+  </include>
+  
+  <!-- Map server -->
+  <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_file)"/>
+  
+  <!-- AMCL -->
+  <include file="$(find final_project)/launch/amcl.launch">
+    <arg name="initial_pose_x" value="$(arg x_guess)"/>
+    <arg name="initial_pose_y" value="$(arg y_guess)"/>
+  </include>
+  
+  <!-- rviz -->
+  <group if="$(arg open_rviz)"> 
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find final_project)/rviz/turtlebot3_navigation_custom.rviz"/>
+  </group>
+    
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="rob_st_pub" >
+    <remap from="robot_description" to="robot_description" />
+    <remap from="joint_states" to="joint_states" />
+  </node>
+
+  <!-- your solution node -->
+  <node pkg="final_project" name="navigation" type="task_2.py" output="screen"/>
+
+</launch>

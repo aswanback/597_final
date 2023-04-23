@@ -1,0 +1,18 @@
+FROM nvidia_ros:latest
+ 
+# Change the default shell to Bash
+SHELL [ "/bin/bash" , "-c" ]
+ 
+ADD ./ME597_final_project_env/ /final_project_ws/src/
+
+RUN apt update && apt install -y build-essential ros-noetic-turtlebot3 python3-catkin-tools \
+ && cd /final_project_ws/ \
+ && source /opt/ros/noetic/setup.bash \
+ && catkin build \
+ && echo "TURTLEBOT3_MODEL=waffle" > ~/.bashrc \
+ && echo "source /final_project_ws/devel/setup.bash" >> ~/.bashrc \
+ && source ~/.bashrc \
+ && echo "catkin build finished!"
+ 
+# Set the working folder at startup
+WORKDIR /final_project_ws

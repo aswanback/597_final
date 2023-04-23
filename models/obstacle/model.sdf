@@ -1,0 +1,34 @@
+<?xml version='1.0'?>
+<sdf version='1.6'>
+  <model name='obstacle'>
+    <pose frame=''>0 0 0 0 -0 0</pose>
+        <link name='obstacle_0'>
+      <collision name='obstacle_0_Collision'>
+        <geometry>
+            <cylinder>
+              <radius>0.5</radius>
+              <length>.5</length>
+            </cylinder>
+        </geometry>
+        <pose frame=''>0 0 0.25 0 -0 0</pose>
+      </collision>
+      <visual name='obstacle_0_Visual'>
+        <pose frame=''>0 0 0.25 0 -0 0</pose>
+        <geometry>
+            <cylinder>
+              <radius>0.5</radius>
+              <length>.5</length>
+            </cylinder>
+        </geometry>
+                <material> <!-- LED material -->
+          <ambient>0 0 0 1</ambient>
+          <diffuse>0 0 0 1</diffuse>
+          <specular>0 0 0 0</specular>
+          <emissive>1 1 1 1</emissive>
+        </material> <!-- End LED material -->
+      </visual>
+      <pose frame=''>0 0 0 0 -0 0</pose>
+    </link>
+    <static>1</static>
+  </model>
+</sdf>
