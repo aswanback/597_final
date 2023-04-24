@@ -13,13 +13,16 @@ import numpy as np
 from visualization_msgs.msg import MarkerArray, Marker
 from a_star2 import Map, AStar
 import tf
+import cv2
+
+
 
 class Task1Node:
     def __init__(self, node_name):
         rospy.init_node(node_name, anonymous=True)
         self.rate = rospy.Rate(50)
         self.listener = tf.TransformListener()
-        rospy.Timer(rospy.Duration(0.05), self.__timer_cbk)
+        rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
         
         self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=1)
@@ -43,8 +46,8 @@ class Task1Node:
         self.currIdx = 0
         self.last_time = None
         
-        self.k = 5 # kmeans
-        self.frontier_downsample = 2
+        self.k = 4 # kmeans
+        self.frontier_downsample = 1
         self.replan_downsample = 1
         self.dilate_size = 11
         
@@ -70,75 +73,136 @@ class Task1Node:
         self.grid = np.array(data.data, dtype=np.int8).reshape((data.info.height, data.info.width)).astype(np.int8)
         self.origin = data.info.origin
         self.resolution = data.info.resolution
-        self.replan()
+        # self.replan()
    
-    def get_frontiers(self):
-        # Find unexplored cells
-        unexplored_cells = (self.grid == -1).astype(int)
+    # def get_frontiers(self):
+    #     # Find unexplored cells
+    #     unexplored_cells = (self.grid == -1).astype(int)
 
-        # Create a sliding window view for unexplored cells
-        window_shape = (3, 3)
-        sliding_window = np.lib.stride_tricks.sliding_window_view(unexplored_cells, window_shape)
+    #     # Create a sliding window view for unexplored cells
+    #     window_shape = (3, 3)
+    #     sliding_window = np.lib.stride_tricks.sliding_window_view(unexplored_cells, window_shape)
 
-        # Sum the window view along the last two axes to simulate a convolution with a 3x3 kernel
-        convoluted_unexplored = sliding_window.sum(axis=(-1, -2))
+    #     # Sum the window view along the last two axes to simulate a convolution with a 3x3 kernel
+    #     convoluted_unexplored = sliding_window.sum(axis=(-1, -2))
 
-        # Find cells with at least two unexplored neighbors
-        regions_of_interest = (convoluted_unexplored > 1)
+    #     # Find cells with at least two unexplored neighbors
+    #     regions_of_interest = (convoluted_unexplored > 1)
 
-        # Pad the regions_of_interest array to match the grid's shape
-        pad_height = self.grid.shape[0] - regions_of_interest.shape[0]
-        pad_width = self.grid.shape[1] - regions_of_interest.shape[1]
-        regions_of_interest_padded = np.pad(regions_of_interest, ((0, pad_height), (0, pad_width)))
+    #     # Pad the regions_of_interest array to match the grid's shape
+    #     pad_height = self.grid.shape[0] - regions_of_interest.shape[0]
+    #     pad_width = self.grid.shape[1] - regions_of_interest.shape[1]
+    #     regions_of_interest_padded = np.pad(regions_of_interest, ((0, pad_height), (0, pad_width)))
 
-        # Create a mask to find the frontiers by combining the regions_of_interest and free cells
-        mask = (self.grid == 0) & regions_of_interest_padded
+    #     # Create a mask to find the frontiers by combining the regions_of_interest and free cells
+    #     mask = (self.grid == 0) & regions_of_interest_padded
 
-        # Get the indices of the frontier cells
-        frontiers = np.argwhere(mask)
+    #     # Get the indices of the frontier cells
+    #     frontiers = np.argwhere(mask)
 
-        return [tuple(frontier) for frontier in frontiers]
+    #     return [tuple(frontier) for frontier in frontiers]
+    # def kmeans(self, points, k):
+    #     # Convert the list of points to a NumPy array
+    #     points = np.array(points)
+
+    #     # Randomly initialize k cluster centroids
+    #     centroids = points[np.random.choice(len(points), k, replace=False), :]
+
+    #     # Initialize cluster assignments for each point
+    #     labels = np.zeros(len(points))
+
+    #     while True:
+    #         # Compute the squared Euclidean distance between each point and each centroid
+    #         sqdistances = np.sum((points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2, axis=-1)
+
+    #         # Assign each point to the closest centroid
+    #         new_labels = np.argmin(sqdistances, axis=1)
+
+    #         # If no points have changed cluster assignments, terminate
+    #         if np.array_equal(labels, new_labels):
+    #             break
+
+    #         # Update cluster assignments and centroids
+    #         labels = new_labels
+    #         for i in range(k):
+    #             centroids[i, :] = np.mean(points[labels == i, :], axis=0)
+
+    #     # Compute the number of points in each cluster
+    #     cluster_sizes = [np.sum(labels == i) for i in range(k)]
+    #     return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
+    # def get_frontiers(self):
+    #     # Convert the input image to an int8 or uint8 array
+    #     image_cv = self.grid.astype(np.int8)
+
+    #     # Create a binary mask for free space (0) and unexplored cells (-1)
+    #     free_space_mask = cv2.inRange(image_cv, 0, 0)
+    #     unexplored_mask = cv2.inRange(image_cv, -1, -1)
+
+    #     # Dilate the free space mask to expand it
+    #     kernel = np.ones((3, 3), dtype=np.uint8)
+    #     dilated_free_space_mask = cv2.dilate(free_space_mask, kernel, iterations=1)
+
+    #     # Perform a bitwise AND operation between the dilated free space mask and the unexplored cells mask
+    #     frontier_mask = cv2.bitwise_and(dilated_free_space_mask, unexplored_mask)
+
+    #     # Find the non-zero coordinates of the frontier mask
+    #     frontier_points = cv2.findNonZero(frontier_mask)
+
+    #     return np.squeeze(frontier_points, axis=1)
+    
+    def get_frontiers(self, map):
+        # Create a binary mask for free space (0) and unexplored cells (-1)
+        free_space_mask = cv2.inRange(map, 0, 0)
+        unexplored_mask = cv2.inRange(map, 50, 50)
+
+        # Define the kernel for checking adjacency
+        kernel = np.array([[1, 1, 1],
+                        [1, 0, 1],
+                        [1, 1, 1]], dtype=np.uint8)
+
+        # Filter the free_space_mask with the kernel
+        adjacent_free_space_mask = cv2.filter2D(free_space_mask, -1, kernel)
+
+        # Threshold the adjacent_free_space_mask to binary values
+        _, adjacent_free_space_binary = cv2.threshold(adjacent_free_space_mask, 1, 255, cv2.THRESH_BINARY)
+
+        # Perform a bitwise AND operation between the adjacent free space mask and the unexplored cells mask
+        frontier_mask = cv2.bitwise_and(adjacent_free_space_binary, unexplored_mask)
+        # border_mask = np.zeros_like(frontier_mask)
+        # border_mask[1:-1, 1:-1] = 0
+        # frontier_mask = cv2.bitwise_and(frontier_mask, border_mask)
+        # Find the non-zero coordinates of the frontier mask
+        cv2.imshow('map',frontier_mask)
+        cv2.waitKey(0)
+        frontier_points = cv2.findNonZero(frontier_mask)
+        return np.squeeze(frontier_points, axis=1)
+
+    
     def kmeans(self, points, k):
-        # Convert the list of points to a NumPy array
-        points = np.array(points)
+        # Set the termination criteria for the K-means algorithm (either 100 iterations or an epsilon of 1.0)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
 
-        # Randomly initialize k cluster centroids
-        centroids = points[np.random.choice(len(points), k, replace=False), :]
-
-        # Initialize cluster assignments for each point
-        labels = np.zeros(len(points))
-
-        while True:
-            # Compute the squared Euclidean distance between each point and each centroid
-            sqdistances = np.sum((points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2, axis=-1)
-
-            # Assign each point to the closest centroid
-            new_labels = np.argmin(sqdistances, axis=1)
-
-            # If no points have changed cluster assignments, terminate
-            if np.array_equal(labels, new_labels):
-                break
-
-            # Update cluster assignments and centroids
-            labels = new_labels
-            for i in range(k):
-                centroids[i, :] = np.mean(points[labels == i, :], axis=0)
+        # Apply the OpenCV K-means algorithm
+        ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
 
         # Compute the number of points in each cluster
         cluster_sizes = [np.sum(labels == i) for i in range(k)]
-        return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
+
+        return [tuple(c[::-1]) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
+
 
     def select_frontier(self, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:Tuple[int,int]):
         best_score = np.Inf
         best_frontier = None
         mp = Map(self.grid, self.dilate_size)
+        rospy.loginfo(f'fc {frontiers}, {cluster_sizes}')
         for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
             raw_path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
             rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e6:.2f}ms ')
             if raw_path is None:
                 continue
-            if dist*cluster_size < best_score:
+            if dist/cluster_size < best_score:
                 best_score = dist*cluster_size
                 best_frontier = frontier
         return best_frontier
@@ -148,8 +212,8 @@ class Task1Node:
         if self.ttbot_pose_is_none or self.grid is None:
             rospy.loginfo('solve: waiting for pose and grid')
             return None
-        
-        frontiers = self.get_frontiers()
+        mp = Map(self.grid).get_map()
+        frontiers = self.get_frontiers(mp)
         frontiers, sizes = self.kmeans(frontiers, self.k)
         start = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
         frontier = self.select_frontier(frontiers, sizes, start)
@@ -175,6 +239,7 @@ class Task1Node:
             return
         
         mp = Map(self.grid, self.dilate_size)
+        mp.display() 
         tt = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
         start = tt if self.path is None else self.world_to_pixel(self.path.poses[self.currIdx].pose.position.x, self.path.poses[self.currIdx].pose.position.y)
         raw_path, dist = AStar(mp, start, self.frontier, self.replan_downsample).run()
@@ -298,7 +363,7 @@ class Task1Node:
         return path
     def publish_frontiers(self, frontiers):
         marker_array = MarkerArray()
-        marker_array.markers = [self.make_marker(frontier[0],frontier[1],idx) for idx,frontier in enumerate(frontiers)]
+        marker_array.markers = [self.make_marker(frontier[0],frontier[1],idx,rgb=(0,0,1)) for idx,frontier in enumerate(frontiers)]
         self.frontiers_pub.publish(marker_array)       
     def pixel_to_world(self, x: int, y: int) -> tuple:
         # Compute the coordinates of the center of the cell at (x, y)

@@ -16,17 +16,47 @@ import cv2
 import numpy as np
 import yaml
 
+
 class Map():
     def __init__(self, map:Union[np.ndarray,str], dilate_size:int=7):
         if isinstance(map, np.ndarray):
-            self.map = np.clip(map, 0, None).astype(np.uint8)
+            self.map = map
+            self.map[self.map < 0] = 50  # set all unknown cells to 255
+            self.map = np.clip(self.map, 0, None).astype(np.uint8) # use uint8 to save memory
         elif isinstance(map, str):
             self.map = None
             self.__open_map(map)
         else:
             raise Exception("Map.__init__: invalid map type")
-        self.dilate(dilate_size)
+        
+        unknown_erode_size = 3
+        occupied_dilate_size = 3
+        free_erode_size = 3
+        free_dilate_size = 3
+    
+        occupied_mask = cv2.inRange(self.map, 100, 100)
+        unknown_mask = cv2.inRange(self.map, 50, 50)
+        free_mask = cv2.inRange(self.map, 0, 0)
+
+        # Erode and dilate the unknown_mask
+        unknown_mask = cv2.erode(unknown_mask, self.kernel(unknown_erode_size), iterations=1)
+        occupied_mask = cv2.dilate(occupied_mask, self.kernel(occupied_dilate_size), iterations=3)
+
+        # Erode and dilate the free_mask
+        free_mask = cv2.erode(free_mask, self.kernel(free_erode_size), iterations=1)
+        free_mask = cv2.dilate(free_mask, self.kernel(free_dilate_size), iterations=1)
+
+        # Combine the modified masks back into the original image format
+        modified_map = np.zeros_like(self.map)
+        modified_map[free_mask > 0] = 0
+        modified_map[unknown_mask > 0] = 50
+        modified_map[occupied_mask > 0] = 100
+        self.map = modified_map
+        
         self.downsize_factor = 1
+    
+    def kernel(self, size):
+        return np.ones((size, size), dtype=np.uint8)
     
     def downsize(self, downsize_factor):
         if downsize_factor != 1:
@@ -49,8 +79,8 @@ class Map():
             map_dict = yaml.safe_load(f)
             self.thresh = map_dict['occupied_thresh'] * 255
         self.map = cv2.imread(map_name+'.pgm', cv2.IMREAD_GRAYSCALE)
-        self.map = cv2.resize(self.map, (200, 200), interpolation=cv2.INTER_AREA)
-        cv2.threshold(self.map, self.thresh, 255, cv2.THRESH_BINARY_INV, dst=self.map)
+        # self.map = cv2.resize(self.map, (200, 200), interpolation=cv2.INTER_AREA)
+        cv2.threshold(self.map, self.thresh, 100, cv2.THRESH_BINARY_INV, dst=self.map)
     
     def __is_valid(self, coord):
         x, y = coord
@@ -100,6 +130,7 @@ class Map():
         y_min, y_max = np.min(nonzero_indices[0] - b), np.max(nonzero_indices[0] + b)
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
+        fig.colorbar(ax.get_images()[0], ax=ax)
         plt.show()
 
 class AStar():
@@ -110,6 +141,8 @@ class AStar():
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
+        if downsize_factor > min(self.m.map.shape[0], self.m.map.shape[1]):
+            downsize_factor = min(self.m.map.shape[0], self.m.map.shape[1])
         if downsize_factor != 1:
             self.m.downsize(downsize_factor)
         self.end = self.m.find_closest_valid_point(self.downsize(end))
@@ -144,7 +177,7 @@ class AStar():
             direction_penalty = (1 - np.dot(parent_direction, current_direction)) * 0.5  # Calculate penalty based on direction change
         else:
             direction_penalty = 0
-        direction_penalty *= 0.2*self.dist[node]
+        direction_penalty *= 0.3*self.dist[node]
         return (self.dist[node] + direction_penalty) ** 2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
 
     
