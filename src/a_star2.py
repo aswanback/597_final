@@ -17,16 +17,19 @@ import numpy as np
 import yaml
 
 class Map():
-    def __init__(self, map:Union[np.ndarray,str], dilate_size:int=7,downsize_factor:int=None):
+    def __init__(self, map:Union[np.ndarray,str], dilate_size:int=7):
         if isinstance(map, np.ndarray):
             self.map = np.clip(map, 0, None).astype(np.uint8)
         elif isinstance(map, str):
             self.map = None
             self.__open_map(map)
-        else: 
+        else:
             raise Exception("Map.__init__: invalid map type")
         self.dilate(dilate_size)
-        if downsize_factor is not None:
+        self.downsize_factor = 1
+    
+    def downsize(self, downsize_factor):
+        if downsize_factor != 1:
             self.map = cv2.resize(self.map, (self.map.shape[0]//downsize_factor, self.map.shape[1]//downsize_factor), interpolation=cv2.INTER_NEAREST)
         self.downsize_factor = downsize_factor
         
@@ -74,137 +77,85 @@ class Map():
                 if new_coord not in visited:
                     visited.add(new_coord)
                     queue.append(new_coord)
+        rospy.logerr("No valid point found")
         return None
     
     def display(self,path=None):
         if self.map is None:
             raise Exception("Map.display: map is None")
+        fig, ax = plt.subplots()
         if path is not None:
             path_array = copy(self.map)
             for tup in path:
                 path_array[tup] = 100
-            plt.imshow(path_array)
+            data = path_array
         else:
-            plt.imshow(self.map)
-        plt.autoscale(True)
-        plt.colorbar()
+            data = self.map
         
+        data = np.rot90(data, k=3, axes=(0, 1))
+        ax.imshow(data)
+        nonzero_indices = np.nonzero(data)
+        b = 5
+        x_min, x_max = np.min(nonzero_indices[1] - b), np.max(nonzero_indices[1] + b)
+        y_min, y_max = np.min(nonzero_indices[0] - b), np.max(nonzero_indices[0] + b)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
         plt.show()
 
 class AStar():
-    def __init__(self,map:Map, start:Tuple[int,int], end:Tuple[int,int]):
+    def __init__(self, map:Map, start:Tuple[int,int], end:Tuple[int,int], downsize_factor:int=1):
         self.m:Map = map
         self.map:np.ndarray = map.get_map()
         self.q:List[Tuple(int,int)] = []
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
-        self.end = end
-        self.start = start
+        if downsize_factor != 1:
+            self.m.downsize(downsize_factor)
+        self.end = self.m.find_closest_valid_point(self.downsize(end))
+        self.start = self.m.find_closest_valid_point(self.downsize(start))
+        if not (isinstance(self.start[0], (int, np.integer)) and isinstance(self.start[1], (int, np.integer)) and isinstance(self.end[0], (int, np.integer)) and isinstance(self.end[1], (int, np.integer))):
+            raise Exception(f"AStar.__init__: start or end is not an int tuple. start: {start}  end:{end}")
         sqrt2 = 17
         one = 12
-        three = 21
+        sqrt5 = 27
         self.dirs = np.array([
             [1, 1, sqrt2], [1, -1, sqrt2], [-1, 1, sqrt2], [-1, -1, sqrt2],
             [1, 0, one], [0, 1, one], [-1, 0, one], [0, -1, one],
-            # [1,2,three],[2,1,three],[-1,2,three],[-2,1,three],[1,-2,three],[2,-1,three],[-1,-2,three],[-2,-1,three]
+            [1,2,sqrt5],[2,1,sqrt5],[-1,2,sqrt5],[-2,1,sqrt5],[1,-2,sqrt5],[2,-1,sqrt5],[-1,-2,sqrt5],[-2,-1,sqrt5]
         ]).astype(int)
         self.map_shape = np.array(self.map.shape)
+    
+    def downsize(self, point):
+        return tuple(np.array(point) // self.m.downsize_factor)
+    
+    def upsize(self, point):
+        return tuple(np.array(point) * self.m.downsize_factor)
 
-    def __get_f_score(self, node:Tuple[int,int]) -> float:
+    def __get_f_score(self, node:Tuple[int,int], parent_direction:Optional[np.array] = None) -> float:
         if node not in self.dist:
             self.dist[node] = np.Inf
         if node not in self.h:
             self.h[node] = (self.end[0]-node[0])**2 + (self.end[1]-node[1])**2
-        return self.dist[node]**2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
+        # return self.dist[node]**2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
+        if parent_direction is not None:
+            current_direction = np.array(node) - np.array(self.via[node])
+            current_direction = current_direction / np.linalg.norm(current_direction)
+            direction_penalty = (1 - np.dot(parent_direction, current_direction)) * 0.5  # Calculate penalty based on direction change
+        else:
+            direction_penalty = 0
+        direction_penalty *= 0.2*self.dist[node]
+        return (self.dist[node] + direction_penalty) ** 2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
 
-    # def get_children(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
-    #     sqrt2 = np.sqrt(2)
-    #     weights = np.array([sqrt2, sqrt2, sqrt2, sqrt2, 1, 1, 1, 1])
-    #     # Define the relative coordinates of the 8 neighboring pixels
-    #     dirs = np.array([
-    #         [1, 1], [1, -1], [-1, 1], [-1, -1], 
-    #         [1, 0], [0, 1], [-1, 0], [0, -1]
-    #     ])
-    #     # Calculate the absolute coordinates of the neighboring pixels
-    #     coords = np.array(coord) + dirs
-    #     # Check if the coordinates are within the image bounds
-    #     valid_mask = np.all((coords >= 0) & (coords < np.array(self.map.shape)), axis=1)
-    #     # Extract the in-bound neighboring pixel coordinates
-    #     coords = coords[valid_mask]
-    #     # Filter out the non-zero neighbors
-    #     mask = (self.map[coords[:, 0], coords[:, 1]] == 0)
-    #     # Return the valid neighbors and their corresponding weights
-    #     return [tuple(item) for item in coords[mask]], weights[valid_mask][mask]
-    # def get_children(self, coord:Tuple[int,int]) -> List[Tuple[int,int]]:
-    #     sqrt2 = np.sqrt(2)
-    #     weights = np.array([sqrt2, 1, sqrt2, 1, 1, sqrt2, 1, sqrt2])
-    #     # Define the relative coordinates of the 8 neighboring pixels
-    #     relative_coords = np.array([
-    #         [-1, -1],
-    #         [-1,  0],
-    #         [-1,  1],
-    #         [ 0, -1],
-    #         [ 0,  1],
-    #         [ 1, -1],
-    #         [ 1,  0],
-    #         [ 1,  1]
-    #     ])
-    #     # Calculate the absolute coordinates of the neighboring pixels
-    #     neighbors = np.array(coord) + relative_coords
-    #     # Check if the coordinates are within the image bounds
-    #     in_bounds = np.all((neighbors >= 0) & (neighbors < np.array(self.map.shape)), axis=1)
-    #     # Extract the in-bound neighboring pixel coordinates
-    #     valid_neighbors = neighbors[in_bounds]
-    #     # Get the values of the in-bound neighboring pixels in the binary image
-    #     neighbor_values = self.map[valid_neighbors[:, 0], valid_neighbors[:, 1]]
-    #     # Filter out the non-zero neighbors
-    #     non_zero_mask = neighbor_values == 0
-    #     # Return the valid neighbors and their corresponding weights
-    #     return [tuple(item) for item in valid_neighbors[non_zero_mask]], weights[in_bounds][non_zero_mask]
-    
-    # def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
-    #     sqrt2 = np.sqrt(2)
-    #     # weights = np.array([sqrt2, sqrt2, sqrt2, sqrt2, 1, 1, 1, 1])
-    #     dirs = np.array([
-    #         [1, 1, sqrt2], [1, -1, sqrt2], [-1, 1, sqrt2], [-1, -1, sqrt2],
-    #         [1, 0, 1], [0, 1, 1], [-1, 0, 1], [0, -1, 1]
-    #     ])
-
-    #     # Calculate the absolute coordinates of the neighboring pixels
-    #     coords = np.array(coord + (2,)) + dirs
-    #     map_shape = np.array(self.map.shape)
-    #     print(coords[:,:2])
-        
-    #     # Check if the coordinates are within the image bounds
-    #     mask = np.all((coords[:,:2] >= 0) & (coords[:,:2] < map_shape) & self.map[coords[:,:2]] == 0, axis=1)
-
-    #     # Extract the in-bound neighboring pixel coordinates
-    #     # valid_coords = coords[valid_mask]
-
-    #     # # Filter out the non-zero neighbors
-    #     # mask = (self.map[valid_coords[:, 0], valid_coords[:, 1]] == 0)
-    #     valid_coords = coords
-        
-    #     # Return the valid neighbors and their corresponding weights
-    #     print(valid_coords[mask].shape)
-    #     return valid_coords[mask] #, weights[valid_mask][mask]
     
     def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
         # Calculate the absolute coordinates of the neighboring pixels
         coords = np.array(coord + (0,)) + self.dirs
-        
         # Check if the coordinates are within the image bounds
         in_bounds_mask = np.all((coords[:, :2] >= 0) & (coords[:, :2] < self.map_shape), axis=1)
-
         # Filter out the non-zero neighbors and apply the in_bounds_mask
         zero_neighbors = self.map[coords[in_bounds_mask, 0], coords[in_bounds_mask, 1]] == 0
         return coords[in_bounds_mask][zero_neighbors]
-    
-    # def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
-    #     coords = np.array(coord + (0,)) + self.dirs
-    #     return coords[self.map[coords[:, 0], coords[:, 1]] == 0]
-
 
     def solve(self):
         sn = self.start
@@ -215,8 +166,6 @@ class AStar():
             u:Tuple[int,int] = heapq.heappop(self.q)[1]          # get node with the lowest f score from priority queue
             if u[0] == en[0] and u[1] == en[1]:                 # if it's the end node, done
                 break
-            # children, weights = self.get_children(u)  # get the children of the node
-            # for c,w in zip(children,weights):      # for each connected child of the node:
             for (cx,cy,w) in self.get_children(u):
                 c = (cx,cy)
                 if u not in self.dist:
@@ -227,7 +176,10 @@ class AStar():
                 if new_dist < self.dist[c]:  # if the new distance is better than the old one:
                     self.dist[c] = new_dist  # add new dist of c to the dictionary
                     self.via[c] = u     # add new node c with parent reference u
-                    heapq.heappush(self.q, (self.__get_f_score(c), c))   # add c to the priority queue with new f score
+                    # heapq.heappush(self.q, (self.__get_f_score(c), c))   # add c to the priority queue with new f score
+                    parent_direction = np.array(u) - np.array(self.via[u]) if u in self.via else None
+                    heapq.heappush(self.q, (self.__get_f_score(c, parent_direction), c))   # add c to the priority queue with new f score
+
                     
     def reconstruct_path(self):
         sn = self.start
@@ -242,14 +194,11 @@ class AStar():
         ''' Collapses a path by removing redundant waypoints'''
         if len(path) < 3:
             return path
-        
         result = [path[0], path[1]]
-        
         for i in range(2, len(path)):
             prev = result[-1]
             prev2 = result[-2]
             curr = path[i]
-            
             if ((prev[0] - prev2[0]) * (curr[1] - prev[1])) == ((curr[0] - prev[0]) * (prev[1] - prev2[1])):
                 result[-1] = curr
             else:
@@ -260,10 +209,10 @@ class AStar():
         self.solve()
         try:
             path, dist = self.reconstruct_path()
-        except KeyError:
-            rospy.loginfo('No path found, outside bounds')
+        except KeyError as e:
+            rospy.loginfo(f'astar.run: no path found, outside bounds ({e})')
             return None, np.Inf
         path = self.collapse_path(path)
         if self.m.downsize_factor is not None:
             path = np.array(path) * self.m.downsize_factor
-        return path,dist
+        return path, dist

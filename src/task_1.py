@@ -18,17 +18,13 @@ class Task1Node:
     def __init__(self, node_name):
         rospy.init_node(node_name, anonymous=True)
         self.rate = rospy.Rate(50)
-        self.k = 3 #kmeans
-        # rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
         self.listener = tf.TransformListener()
         rospy.Timer(rospy.Duration(0.05), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
-        # rospy.wait_for_message('/map', OccupancyGrid)
         
-        self.frontier_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=1)
-        self.path_pub = rospy.Publisher("/path", Path, queue_size=self.k)
-        self.goal_pub = rospy.Publisher('/goal_frontier',Marker,queue_size=1)
-        self.selected_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=1)
+        self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=1)
+        self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=1)
+        self.path_pub = rospy.Publisher("/path", Path, queue_size=1)
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=2)
         self.ttbot_pub = rospy.Publisher('ttbot_pose', PoseStamped, queue_size=2)
         
@@ -36,136 +32,46 @@ class Task1Node:
         self.resolution:float = None
         self.origin:Pose = None
         self.path:Path = None
-        # self.frontiers = None
+        self.frontier = None
         self.ttbot_pose:PoseStamped = PoseStamped()
         self.ttbot_pose.header.frame_id = 'map'
         self.ttbot_pose.pose.orientation.w = 1.0
+        self.ttbot_pose_is_none = True
         
         self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        self.distance_pid = PIDController(0.5,0,0.1,[-1,1])
-        self.heading_tolerance = 10
-        
-        self.linear = 0
-        self.angular = 0
-        
+        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5])
         self.currIdx = 0
         self.last_time = None
-
-    
+        
+        self.k = 5 # kmeans
+        self.frontier_downsample = 2
+        self.replan_downsample = 1
+        self.dilate_size = 11
+        
     def __timer_cbk(self, event):
-        if self.ttbot_pose is None or self.grid is None:
-            rospy.loginfo('Waiting for map or odom')
+        if self.grid is None:
+            # rospy.loginfo('Waiting for map or odom')
             return
-        tt = self.ttbot_pose.pose.position
-        to = self.ttbot_pose.pose.orientation
-        rospy.loginfo(f'ttbot_pose before update: {tt.x}, {tt.y}, {euler_from_quaternion((to.x, to.y, to.z, to.w))[2]}')
         try:
             # get the transform from map to odom
-            if tf.frameExists("/odom") and tf.frameExists("/map"):
-                (position, heading) = self.listener.lookupTransform('/odom', '/map', rospy.Time.now())
-                self.ttbot_pose.pose.position.x = position[0]
-                self.ttbot_pose.pose.position.y = position[1]
-                self.ttbot_pose.pose.orientation.x = heading[0]
-                self.ttbot_pose.pose.orientation.y = heading[1]
-                self.ttbot_pose.pose.orientation.z = heading[2]
-                self.ttbot_pose.pose.orientation.w = heading[3]
-                self.ttbot_pub.publish(self.ttbot_pose)
-                rospy.loginfo(f'ttbot_pose before update: {tt.x}, {tt.y}, {euler_from_quaternion((to.x, to.y, to.z, to.w))[2]}')
-            
+            (position, heading) = self.listener.lookupTransform('/map', '/base_link', rospy.Time(0))
+            self.ttbot_pose.pose.position.x = position[0]
+            self.ttbot_pose.pose.position.y = position[1]
+            self.ttbot_pose.pose.orientation.x = heading[0]
+            self.ttbot_pose.pose.orientation.y = heading[1]
+            self.ttbot_pose.pose.orientation.z = heading[2]
+            self.ttbot_pose.pose.orientation.w = heading[3]
+            self.ttbot_pub.publish(self.ttbot_pose)
+            self.ttbot_pose_is_none = False
         except Exception as e:
-            rospy.loginfo(f'Exception in tf odom: {e}')
+            rospy.logerr(f'Exception in tf odom: {e}')
             pass
-    
     def __grid_cb(self, data:OccupancyGrid):
         self.grid = np.array(data.data, dtype=np.int8).reshape((data.info.height, data.info.width)).astype(np.int8)
         self.origin = data.info.origin
         self.resolution = data.info.resolution
-        self.solve()  
-
-    def solve(self):
-        if self.ttbot_pose is None or self.grid is None:
-            return
-        
-        t = time.time_ns()
-        self.mp = Map(self.grid, 11, None)
-        # self.mp.display()
-        frontiers = self.get_frontiers()
-        num = len(frontiers)
-        frontiers = self.kmeans(frontiers, self.k)
-        start = (self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
-        ret = self.select_frontier([frontiers[0]], start)
-        if ret is None:
-            rospy.loginfo('No frontier found')
-            return
-        front, dist, raw_path = ret
-        self.frontier = self.pixel_to_world(*front)
-        self.path = self.make_path(raw_path)
-        
-        # logging
-        rospy.loginfo(f"Found {num} frontiers ({self.k} clusters) in {(time.time_ns() - t)/1e6:.1f}ms")
-        self.publish_frontiers([self.pixel_to_world(x, y) for x, y in frontiers])
-        self.selected_pub.publish(self.make_marker(self.frontier[0],self.frontier[1],0,rgb=(1,0,0)))
-        self.path_pub.publish(self.path)
-        
-    def make_marker(self, x, y, id=0, size=0.15, rgb=(0,0,0)):
-        marker = Marker()
-        marker.header.frame_id = "map"
-        marker.id = id
-        marker.type = marker.SPHERE
-        marker.action = marker.ADD
-        marker.pose.position.x = x
-        marker.pose.position.y = y
-        marker.pose.position.z = 0
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = marker.scale.y = marker.scale.z = size
-        marker.color.a = 1.0
-        marker.color.r = rgb[0]
-        marker.color.g = rgb[1]
-        marker.color.b = rgb[2]
-        return marker
-    
-    def make_path(self,raw_path):
-        if raw_path is None:
-            return
-        path = Path()
-        path.header.frame_id = 'map'
-        for coord in raw_path:
-            p = PoseStamped()
-            x, y = self.pixel_to_world(*coord)
-            p.pose.position.x = x
-            p.pose.position.y = y
-            path.poses.append(p)
-        return path
-  
-    def publish_frontiers(self, frontiers):
-        marker_array = MarkerArray()
-        marker_array.markers = [self.make_marker(frontier[0],frontier[1],idx) for idx,frontier in enumerate(frontiers)]
-        self.frontier_pub.publish(marker_array)       
-    
-    def pixel_to_world(self, x: int, y: int) -> tuple:
-        # Compute the coordinates of the center of the cell at (x, y)
-        cell_size = self.resolution
-        x_center = (x + 0.5) * cell_size
-        y_center = (y + 0.5) * cell_size
-        
-        # Compute the coordinates of the center of the grid in the world frame
-        x_offset = self.origin.position.x
-        y_offset = self.origin.position.y
-        theta = np.arccos(self.origin.orientation.w) * 2  # Convert quaternion to angle
-        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
-        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
-        
-        return y_center_world, x_center_world
-    def world_to_pixel(self, world_x, world_y):
-        origin_x = self.origin.position.x
-        origin_y = self.origin.position.y
-        resolution = self.resolution
-
-        pixel_x = int((world_x - origin_x) / resolution)
-        pixel_y = int((world_y - origin_y) / resolution)
-
-        return (pixel_x, pixel_y)
-
+        self.replan()
+   
     def get_frontiers(self):
         # Find unexplored cells
         unexplored_cells = (self.grid == -1).astype(int)
@@ -217,52 +123,89 @@ class Task1Node:
             labels = new_labels
             for i in range(k):
                 centroids[i, :] = np.mean(points[labels == i, :], axis=0)
-        return [tuple(c) for c in centroids]
-    
-    def select_frontier(self, frontiers:List[Tuple[int,int]], current_position:Tuple[int,int]):
-        start = self.world_to_pixel(*current_position)
-        
-        ranked_frontiers = []
-        for frontier in frontiers:
+
+        # Compute the number of points in each cluster
+        cluster_sizes = [np.sum(labels == i) for i in range(k)]
+        return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
+
+    def select_frontier(self, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:Tuple[int,int]):
+        best_score = np.Inf
+        best_frontier = None
+        mp = Map(self.grid, self.dilate_size)
+        for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
-            raw_path, dist = AStar(self.mp, start, frontier).run()
-            t2 = time.time_ns()
+            raw_path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
+            rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e6:.2f}ms ')
             if raw_path is None:
                 continue
-            # rospy.loginfo(f'Astar: {(t2-t)/1e6:.2f} ms ')
-            ranked_frontiers.append((frontier, dist, raw_path))
-        ranked_frontiers.sort(key=lambda x: x[1])
-        if len(ranked_frontiers) == 0:
+            if dist*cluster_size < best_score:
+                best_score = dist*cluster_size
+                best_frontier = frontier
+        return best_frontier
+
+    def get_frontier(self):
+        t = time.time_ns()
+        if self.ttbot_pose_is_none or self.grid is None:
+            rospy.loginfo('solve: waiting for pose and grid')
             return None
-        return ranked_frontiers[0]
-
-    def run(self):
         
-        robot_path:Path = None
-        while not rospy.is_shutdown():
-            if self.grid is None:
-                # rospy.loginfo('No map yet')
-                continue
-            
-            if robot_path is None:
-                robot_path = self.path
-                self.move_ttbot(0, 0)
-                continue
-            
-            # rospy.loginfo(f'robot_path: {self.currIdx}/{len(robot_path.poses)}')
-            self.currIdx = self.get_path_idx(robot_path, self.ttbot_pose, self.currIdx)
-            if self.currIdx == len(robot_path.poses) - 1:
-                rospy.loginfo('Reached goal')
-                robot_path = self.path
-                continue
-            
-            self.linear, self.angular = self.pid_controller(self.ttbot_pose, robot_path.poses[self.currIdx])
+        frontiers = self.get_frontiers()
+        frontiers, sizes = self.kmeans(frontiers, self.k)
+        start = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
+        frontier = self.select_frontier(frontiers, sizes, start)
+        if frontier is None:
+            rospy.logerr('node.get_frontier: no frontier found')
+        
+        self.publish_frontiers([self.pixel_to_world(x, y) for x, y in frontiers])
+        world_frontier = self.pixel_to_world(frontier[0], frontier[1])
+        self.selected_frontier_pub.publish(self.make_marker(world_frontier[0], world_frontier[1],0,rgb=(1,0,0)))
+        rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e6:.1f}ms")
+        return frontier
 
-            self.move_ttbot(self.linear, self.angular)
+    def replan(self):
+        t = time.time_ns()
+        if self.frontier is None:
+            rospy.logerr('node.replan: no frontier')
+            return
+        if self.ttbot_pose_is_none:
+            rospy.logerr('node.replan: no pose')
+            return
+        if self.grid is None:
+            rospy.logerr('node.replan: no grid')
+            return
+        
+        mp = Map(self.grid, self.dilate_size)
+        tt = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
+        start = tt if self.path is None else self.world_to_pixel(self.path.poses[self.currIdx].pose.position.x, self.path.poses[self.currIdx].pose.position.y)
+        raw_path, dist = AStar(mp, start, self.frontier, self.replan_downsample).run()
+        if raw_path is None:
+            rospy.loginfo('node.replan: no path found')
+            return
+        
+        self.path = self.make_path(raw_path)
+        self.currIdx = 0
+        self.path_pub.publish(self.path)
+        rospy.loginfo(f'Planned path in {(time.time_ns() - t)/1e6:.1f}ms')
+        
+    def run(self):
+        while not rospy.is_shutdown():
+            if self.grid is None or self.ttbot_pose_is_none:
+                continue
+            
+            if self.path is None or self.currIdx == -1:
+                rospy.loginfo('Frontier reached')
+                self.move_ttbot(0, 0)
+                self.frontier = self.get_frontier()
+                self.replan()
+            
+            self.currIdx = self.get_path_idx(self.path, self.ttbot_pose, self.currIdx)
+            if self.currIdx == -1:
+                continue
+            linear, angular = self.pid_controller(self.ttbot_pose, self.path.poses[self.currIdx], self.path.poses[-1])
+            self.move_ttbot(linear, angular)
             
             self.rate.sleep()
-    
-    
+
     def get_path_idx(self, path:Path, vehicle_pose:PoseStamped, currIdx:int):
         """! Path follower.
         @param  path                  Path object containing the sequence of waypoints of the created path.
@@ -271,13 +214,22 @@ class Task1Node:
         """
         vp = vehicle_pose.pose.position
         p = path.poses[currIdx].pose.position
+        gg = path.poses[-1].pose.position
         sqdist = (p.x - vp.x) ** 2 + (p.y - vp.y) ** 2   
+        ggsqdist = (gg.x - vp.x) ** 2 + (gg.y - vp.y) ** 2
+        if currIdx == 0 and len(path.poses) > 1:
+            p_next = path.poses[currIdx + 1].pose.position
+            sqdist_next = (p_next.x - vp.x) ** 2 + (p_next.y - vp.y) ** 2
+            if sqdist_next < sqdist:
+                currIdx = 1
         if sqdist < 0.1**2:
             return min(currIdx+1, len(path.poses) - 1)
+        if ggsqdist < 0.4**2:
+            return -1
         return currIdx
-
-    def pid_controller(self, current_pose: PoseStamped, goal_pose: PoseStamped):
+    def pid_controller(self, current_pose: PoseStamped, goal_pose: PoseStamped, global_goal: PoseStamped):
         '''Return linear and angular velocity'''
+        heading_tolerance = 10 # degrees
 
         # Calculate distance and heading errors
         cp = current_pose.pose.position
@@ -288,9 +240,9 @@ class Task1Node:
         heading_error = desired_heading - euler_from_quaternion([co.x, co.y, co.z, co.w])[2]
 
         # Check if at goal
-        sgp = self.frontier
+        sgp = global_goal.pose.position
         # sgo = self.frontier.pose.orientation
-        dist = np.sqrt((sgp[0] - cp.x)**2 + (sgp[1] - cp.y)**2)
+        dist = np.sqrt((sgp.x - cp.x)**2 + (sgp.y - cp.y)**2)
         if dist < 0.15:
             rospy.loginfo('At goal, waiting')
             # Adjust to goal heading
@@ -301,7 +253,7 @@ class Task1Node:
         dt = rospy.Time().now().to_sec() - self.last_time if self.last_time else None
 
         heading_control = self.heading_pid.update(heading_error, dt)
-        if abs(heading_error) > self.heading_tolerance/180*np.pi:
+        if abs(heading_error) > heading_tolerance/180*np.pi:
             return 0, heading_control
         # PID controller for distance
         distance_control = self.distance_pid.update(dist_error, dt)
@@ -309,13 +261,68 @@ class Task1Node:
         # Update last time and return velocity commands
         self.last_time = rospy.Time().now().to_sec()
         return distance_control, heading_control
-    
     def move_ttbot(self, linear, angular):
         msg = Twist()
         msg.linear.x = linear
         msg.angular.z = angular
         self.cmd_vel_pub.publish(msg)
+        # rospy.loginfo(f'linear: {linear:.2f}, angular: {angular:.2f}')
 
+    def make_marker(self, x, y, id=0, size=0.15, rgb=(0,0,0)):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.id = id
+        marker.type = marker.SPHERE
+        marker.action = marker.ADD
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = marker.scale.y = marker.scale.z = size
+        marker.color.a = 1.0
+        marker.color.r = rgb[0]
+        marker.color.g = rgb[1]
+        marker.color.b = rgb[2]
+        return marker
+    def make_path(self,raw_path):
+        if raw_path is None:
+            return
+        path = Path()
+        path.header.frame_id = 'map'
+        for coord in raw_path:
+            p = PoseStamped()
+            x, y = self.pixel_to_world(*coord)
+            p.pose.position.x = x
+            p.pose.position.y = y
+            path.poses.append(p)
+        return path
+    def publish_frontiers(self, frontiers):
+        marker_array = MarkerArray()
+        marker_array.markers = [self.make_marker(frontier[0],frontier[1],idx) for idx,frontier in enumerate(frontiers)]
+        self.frontiers_pub.publish(marker_array)       
+    def pixel_to_world(self, x: int, y: int) -> tuple:
+        # Compute the coordinates of the center of the cell at (x, y)
+        cell_size = self.resolution
+        x_center = (x + 0.5) * cell_size
+        y_center = (y + 0.5) * cell_size
+        
+        # Compute the coordinates of the center of the grid in the world frame
+        x_offset = self.origin.position.x
+        y_offset = self.origin.position.y
+        theta = np.arccos(self.origin.orientation.w) * 2  # Convert quaternion to angle
+        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
+        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
+        
+        return y_center_world, x_center_world
+    def world_to_pixel(self, world_x, world_y):
+        origin_x = self.origin.position.x
+        origin_y = self.origin.position.y
+        resolution = self.resolution
+
+        pixel_x = int((world_x - origin_x) / resolution)
+        pixel_y = int((world_y - origin_y) / resolution)
+
+        return (pixel_y, pixel_x)
 
 class PIDController:
     def __init__(self, kp, ki, kd, output_limits=None):
