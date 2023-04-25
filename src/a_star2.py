@@ -204,8 +204,8 @@ class AStar():
             direction_penalty = (1 - np.dot(parent_direction, current_direction)) * 0.5  # Calculate penalty based on direction change
         else:
             direction_penalty = 0
-        direction_penalty *= 0.3*self.dist[node]
-        return (self.dist[node] + direction_penalty) ** 2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
+        direction_penalty *= 1*self.dist[node]
+        return self.dist[node] ** 2 + direction_penalty + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
 
     def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
         # Calculate the absolute coordinates of the neighboring pixels
@@ -281,4 +281,4 @@ class AStar():
             return None, np.Inf
         path = self.collapse_path(path)
         poses = self.make_poses(path)
-        return poses, dist
+        return poses, dist*np.sqrt(2)

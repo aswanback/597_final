@@ -25,10 +25,10 @@ class Task1Node:
         rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
         
-        self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=1)
-        self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=1)
-        self.raw_frontiers_pub = rospy.Publisher("/raw_frontiers", MarkerArray, queue_size=1)
-        self.path_pub = rospy.Publisher("/path", Path, queue_size=1)
+        self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=2)
+        self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=2)
+        self.raw_frontiers_pub = rospy.Publisher("/raw_frontiers", MarkerArray, queue_size=2)
+        self.path_pub = rospy.Publisher("/path", Path, queue_size=2)
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=2)
         self.ttbot_pub = rospy.Publisher('ttbot_pose', PoseStamped, queue_size=2)
         
@@ -43,15 +43,15 @@ class Task1Node:
         self.ttbot_pose_is_none = True
         
         self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5])
+        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
         self.heading_tolerance = 20 # degrees
         self.currIdx = 0
         self.last_time = None
         
         self.k = 4 # kmeans
-        self.frontier_downsample = 1
+        self.frontier_downsample = 3
         self.replan_downsample = 1
-        self.dilate_size = 13
+        self.dilate_size = 17
         self.map:Map = None
         
     def __timer_cbk(self, event):
@@ -101,27 +101,66 @@ class Task1Node:
         frontier_points = np.squeeze(frontier_points, axis=1)
         return np.flip(frontier_points, axis=1)
    
-    def kmeans(self, points, k):
-        # Set the termination criteria for the K-means algorithm (either 100 iterations or an epsilon of 1.0)
-        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
+    # def kmeans(self, points, k):
+    #     # Set the termination criteria for the K-means algorithm (either 100 iterations or an epsilon of 1.0)
+    #     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
 
-        # Apply the OpenCV K-means algorithm
-        rospy.loginfo(f'points: {points.shape}')
-        ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 2, cv2.KMEANS_RANDOM_CENTERS)
+    #     # Apply the OpenCV K-means algorithm
+    #     rospy.loginfo(f'points: {points.shape}')
+    #     ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 2, cv2.KMEANS_RANDOM_CENTERS)
 
-        # Compute the number of points in each cluster
-        cluster_sizes = [np.sum(labels == i) for i in range(k)]
+    #     # Compute the number of points in each cluster
+    #     cluster_sizes = [np.sum(labels == i) for i in range(k)]
 
-        return [tuple(c) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
+    #     return [tuple(c) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
+    
+    # def kmeans(self, points, k):
+    #      # Randomly initialize k cluster centroids
+    #      centroids = points[np.random.choice(len(points), k, replace=False), :]
 
+    #      # Initialize cluster assignments for each point
+    #      labels = np.zeros(len(points))
+
+    #      while True:
+    #          # Compute the squared Euclidean distance between each point and each centroid
+    #          sqdistances = np.sum((points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2, axis=-1)
+
+    #          # Assign each point to the closest centroid
+    #          new_labels = np.argmin(sqdistances, axis=1)
+
+    #          # If no points have changed cluster assignments, terminate
+    #          if np.array_equal(labels, new_labels):
+    #              break
+
+    #          # Update cluster assignments and centroids
+    #          labels = new_labels
+    #          for i in range(k):
+    #              centroids[i, :] = np.mean(points[labels == i, :], axis=0)
+
+    #      # Compute the number of points in each cluster
+    #      cluster_sizes = [np.sum(labels == i) for i in range(k)]
+    #      return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
+   
+    def kmeans(self,points:np.ndarray, k):
+        # Set criteria and apply k-means
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 1000, 0.2)
+        _, labels, centers = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+        # Calculate the size of each cluster as a fraction of the total samples
+        unique_labels, counts = np.unique(labels, return_counts=True)
+        centers = centers.astype(np.uint8)
+        rospy.loginfo(f'kmeans: {centers}')
+        return (tuple(c) for c in centers), counts / np.sum(counts)
+   
     def select_frontier(self, mp:Map, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:PoseStamped):
         best_score = np.Inf
         best_frontier = None
         for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
             path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
-            rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e6:.2f}ms ')
+            rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e9:.2f}s ')
             if path is None:
+                rospy.logerr('select_frontier: no path found')
                 continue
             if dist/cluster_size < best_score:
                 best_score = dist*cluster_size
@@ -134,7 +173,6 @@ class Task1Node:
             rospy.loginfo('solve: waiting for pose and grid')
             return None
         mp = Map(self.grid, self.dilate_size)
-        mp.downsize(self.frontier_downsample)
         raw_frontiers = self.find_frontiers(mp.map)
         self.publish_raw_frontiers([mp.pixel_to_world(x, y) for x, y in raw_frontiers])
         
@@ -144,10 +182,11 @@ class Task1Node:
         frontier = self.select_frontier(mp, frontiers, sizes, self.ttbot_pose)
         if frontier is None:
             rospy.logerr('node.get_frontier: no frontier found')
+            return None
         world_frontier = mp.pixel_to_world(frontier[0], frontier[1])
         self.selected_frontier_pub.publish(self.make_marker(world_frontier,0,rgb=(1,0,0)))
         
-        rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e6:.1f}ms")
+        rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e9:.1f}s")
         return frontier
 
     def replan(self):
@@ -171,7 +210,7 @@ class Task1Node:
         self.path = path
         self.currIdx = 0
         self.path_pub.publish(self.path)
-        rospy.loginfo(f'Planned path in {(time.time_ns() - t)/1e6:.1f}ms')
+        rospy.loginfo(f'Planned path in {(time.time_ns() - t)/1e9:.1f}s')
         
     def run(self):
         while not rospy.is_shutdown():
@@ -183,6 +222,9 @@ class Task1Node:
                 rospy.loginfo('Frontier reached')
                 self.move_ttbot(0, 0)
                 self.frontier = self.get_frontier()
+                if self.frontier is None:
+                    rospy.logerr('node.run: no frontier')
+                    continue
                 self.replan()
             
             self.currIdx = self.get_path_idx(self.path, self.ttbot_pose, self.currIdx)
@@ -280,11 +322,12 @@ class Task1Node:
         self.raw_frontiers_pub.publish(marker_array)       
 
 class PIDController:
-    def __init__(self, kp, ki, kd, output_limits=None):
+    def __init__(self, kp, ki, kd, output_limits=None, min_output=None):
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.output_limits = output_limits
+        self.min_output = min_output
         self.last_error = 0.0
         self.integral = 0.0
 
@@ -301,6 +344,11 @@ class PIDController:
                 self.integral = 0
             elif self.integral < 0 and output == self.output_limits[0]:
                 self.integral = 0
+        if self.min_output:
+            if output > 0:
+                output = max(output, self.min_output)
+            elif output < 0:
+                output = min(output, -self.min_output)
         return output
             
 if __name__ == "__main__":
