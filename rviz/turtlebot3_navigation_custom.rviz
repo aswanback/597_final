@@ -6,7 +6,7 @@ Panels:
       Expanded:
         - /TF1/Frames1
         - /TF1/Tree1
-        - /Pose1
+        - /Raw Frontiers1
       Splitter Ratio: 0.5
     Tree Height: 523
   - Class: rviz/Selection
@@ -308,6 +308,14 @@ Visualization Manager:
       Shape: Arrow
       Topic: /ttbot_pose
       Unreliable: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /raw_frontiers
+      Name: Raw Frontiers
+      Namespaces:
+        {}
+      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:

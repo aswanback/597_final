@@ -27,11 +27,12 @@ class Task1Node:
         
         self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=1)
         self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=1)
+        self.raw_frontiers_pub = rospy.Publisher("/raw_frontiers", MarkerArray, queue_size=1)
         self.path_pub = rospy.Publisher("/path", Path, queue_size=1)
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=2)
         self.ttbot_pub = rospy.Publisher('ttbot_pose', PoseStamped, queue_size=2)
         
-        self.grid:np.ndarray = None
+        self.grid:OccupancyGrid = None
         self.resolution:float = None
         self.origin:Pose = None
         self.path:Path = None
@@ -43,13 +44,15 @@ class Task1Node:
         
         self.heading_pid = PIDController(3,0,0.3, [-2,2])
         self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5])
+        self.heading_tolerance = 20 # degrees
         self.currIdx = 0
         self.last_time = None
         
         self.k = 4 # kmeans
         self.frontier_downsample = 1
         self.replan_downsample = 1
-        self.dilate_size = 11
+        self.dilate_size = 13
+        self.map:Map = None
         
     def __timer_cbk(self, event):
         if self.grid is None:
@@ -67,90 +70,15 @@ class Task1Node:
             self.ttbot_pub.publish(self.ttbot_pose)
             self.ttbot_pose_is_none = False
         except Exception as e:
-            rospy.logerr(f'Exception in tf odom: {e}')
+            rospy.logerr(f'__timer_cbk: {e}')
             pass
     def __grid_cb(self, data:OccupancyGrid):
-        self.grid = np.array(data.data, dtype=np.int8).reshape((data.info.height, data.info.width)).astype(np.int8)
-        self.origin = data.info.origin
-        self.resolution = data.info.resolution
+        self.grid = data
+        self.map = Map(data, self.dilate_size)
+        # self.map.display(delay=2)
         # self.replan()
    
-    # def get_frontiers(self):
-    #     # Find unexplored cells
-    #     unexplored_cells = (self.grid == -1).astype(int)
-
-    #     # Create a sliding window view for unexplored cells
-    #     window_shape = (3, 3)
-    #     sliding_window = np.lib.stride_tricks.sliding_window_view(unexplored_cells, window_shape)
-
-    #     # Sum the window view along the last two axes to simulate a convolution with a 3x3 kernel
-    #     convoluted_unexplored = sliding_window.sum(axis=(-1, -2))
-
-    #     # Find cells with at least two unexplored neighbors
-    #     regions_of_interest = (convoluted_unexplored > 1)
-
-    #     # Pad the regions_of_interest array to match the grid's shape
-    #     pad_height = self.grid.shape[0] - regions_of_interest.shape[0]
-    #     pad_width = self.grid.shape[1] - regions_of_interest.shape[1]
-    #     regions_of_interest_padded = np.pad(regions_of_interest, ((0, pad_height), (0, pad_width)))
-
-    #     # Create a mask to find the frontiers by combining the regions_of_interest and free cells
-    #     mask = (self.grid == 0) & regions_of_interest_padded
-
-    #     # Get the indices of the frontier cells
-    #     frontiers = np.argwhere(mask)
-
-    #     return [tuple(frontier) for frontier in frontiers]
-    # def kmeans(self, points, k):
-    #     # Convert the list of points to a NumPy array
-    #     points = np.array(points)
-
-    #     # Randomly initialize k cluster centroids
-    #     centroids = points[np.random.choice(len(points), k, replace=False), :]
-
-    #     # Initialize cluster assignments for each point
-    #     labels = np.zeros(len(points))
-
-    #     while True:
-    #         # Compute the squared Euclidean distance between each point and each centroid
-    #         sqdistances = np.sum((points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2, axis=-1)
-
-    #         # Assign each point to the closest centroid
-    #         new_labels = np.argmin(sqdistances, axis=1)
-
-    #         # If no points have changed cluster assignments, terminate
-    #         if np.array_equal(labels, new_labels):
-    #             break
-
-    #         # Update cluster assignments and centroids
-    #         labels = new_labels
-    #         for i in range(k):
-    #             centroids[i, :] = np.mean(points[labels == i, :], axis=0)
-
-    #     # Compute the number of points in each cluster
-    #     cluster_sizes = [np.sum(labels == i) for i in range(k)]
-    #     return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
-    # def get_frontiers(self):
-    #     # Convert the input image to an int8 or uint8 array
-    #     image_cv = self.grid.astype(np.int8)
-
-    #     # Create a binary mask for free space (0) and unexplored cells (-1)
-    #     free_space_mask = cv2.inRange(image_cv, 0, 0)
-    #     unexplored_mask = cv2.inRange(image_cv, -1, -1)
-
-    #     # Dilate the free space mask to expand it
-    #     kernel = np.ones((3, 3), dtype=np.uint8)
-    #     dilated_free_space_mask = cv2.dilate(free_space_mask, kernel, iterations=1)
-
-    #     # Perform a bitwise AND operation between the dilated free space mask and the unexplored cells mask
-    #     frontier_mask = cv2.bitwise_and(dilated_free_space_mask, unexplored_mask)
-
-    #     # Find the non-zero coordinates of the frontier mask
-    #     frontier_points = cv2.findNonZero(frontier_mask)
-
-    #     return np.squeeze(frontier_points, axis=1)
-    
-    def get_frontiers(self, map):
+    def find_frontiers(self, map):
         # Create a binary mask for free space (0) and unexplored cells (-1)
         free_space_mask = cv2.inRange(map, 0, 0)
         unexplored_mask = cv2.inRange(map, 50, 50)
@@ -168,39 +96,32 @@ class Task1Node:
 
         # Perform a bitwise AND operation between the adjacent free space mask and the unexplored cells mask
         frontier_mask = cv2.bitwise_and(adjacent_free_space_binary, unexplored_mask)
-        # border_mask = np.zeros_like(frontier_mask)
-        # border_mask[1:-1, 1:-1] = 0
-        # frontier_mask = cv2.bitwise_and(frontier_mask, border_mask)
-        # Find the non-zero coordinates of the frontier mask
-        cv2.imshow('map',frontier_mask)
-        cv2.waitKey(0)
+        
         frontier_points = cv2.findNonZero(frontier_mask)
-        return np.squeeze(frontier_points, axis=1)
-
-    
+        frontier_points = np.squeeze(frontier_points, axis=1)
+        return np.flip(frontier_points, axis=1)
+   
     def kmeans(self, points, k):
         # Set the termination criteria for the K-means algorithm (either 100 iterations or an epsilon of 1.0)
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
 
         # Apply the OpenCV K-means algorithm
-        ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        rospy.loginfo(f'points: {points.shape}')
+        ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 2, cv2.KMEANS_RANDOM_CENTERS)
 
         # Compute the number of points in each cluster
         cluster_sizes = [np.sum(labels == i) for i in range(k)]
 
-        return [tuple(c[::-1]) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
+        return [tuple(c) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
 
-
-    def select_frontier(self, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:Tuple[int,int]):
+    def select_frontier(self, mp:Map, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:PoseStamped):
         best_score = np.Inf
         best_frontier = None
-        mp = Map(self.grid, self.dilate_size)
-        rospy.loginfo(f'fc {frontiers}, {cluster_sizes}')
         for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
-            raw_path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
+            path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
             rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e6:.2f}ms ')
-            if raw_path is None:
+            if path is None:
                 continue
             if dist/cluster_size < best_score:
                 best_score = dist*cluster_size
@@ -212,17 +133,20 @@ class Task1Node:
         if self.ttbot_pose_is_none or self.grid is None:
             rospy.loginfo('solve: waiting for pose and grid')
             return None
-        mp = Map(self.grid).get_map()
-        frontiers = self.get_frontiers(mp)
-        frontiers, sizes = self.kmeans(frontiers, self.k)
-        start = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
-        frontier = self.select_frontier(frontiers, sizes, start)
+        mp = Map(self.grid, self.dilate_size)
+        mp.downsize(self.frontier_downsample)
+        raw_frontiers = self.find_frontiers(mp.map)
+        self.publish_raw_frontiers([mp.pixel_to_world(x, y) for x, y in raw_frontiers])
+        
+        frontiers, sizes = self.kmeans(raw_frontiers, self.k)
+        self.publish_frontiers([mp.pixel_to_world(x, y) for x, y in frontiers])
+        
+        frontier = self.select_frontier(mp, frontiers, sizes, self.ttbot_pose)
         if frontier is None:
             rospy.logerr('node.get_frontier: no frontier found')
+        world_frontier = mp.pixel_to_world(frontier[0], frontier[1])
+        self.selected_frontier_pub.publish(self.make_marker(world_frontier,0,rgb=(1,0,0)))
         
-        self.publish_frontiers([self.pixel_to_world(x, y) for x, y in frontiers])
-        world_frontier = self.pixel_to_world(frontier[0], frontier[1])
-        self.selected_frontier_pub.publish(self.make_marker(world_frontier[0], world_frontier[1],0,rgb=(1,0,0)))
         rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e6:.1f}ms")
         return frontier
 
@@ -234,27 +158,25 @@ class Task1Node:
         if self.ttbot_pose_is_none:
             rospy.logerr('node.replan: no pose')
             return
-        if self.grid is None:
-            rospy.logerr('node.replan: no grid')
+        if self.map is None:
+            rospy.logerr('node.replan: no map')
             return
         
-        mp = Map(self.grid, self.dilate_size)
-        mp.display() 
-        tt = self.world_to_pixel(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y)
-        start = tt if self.path is None else self.world_to_pixel(self.path.poses[self.currIdx].pose.position.x, self.path.poses[self.currIdx].pose.position.y)
-        raw_path, dist = AStar(mp, start, self.frontier, self.replan_downsample).run()
-        if raw_path is None:
-            rospy.loginfo('node.replan: no path found')
+        start = self.ttbot_pose if self.path is None else self.path.poses[self.currIdx]
+        path, dist = AStar(self.map, start, self.frontier, self.replan_downsample).run()
+        if path is None:
+            rospy.logerr('node.replan: no path found')
             return
         
-        self.path = self.make_path(raw_path)
+        self.path = path
         self.currIdx = 0
         self.path_pub.publish(self.path)
         rospy.loginfo(f'Planned path in {(time.time_ns() - t)/1e6:.1f}ms')
         
     def run(self):
         while not rospy.is_shutdown():
-            if self.grid is None or self.ttbot_pose_is_none:
+            if self.map is None or self.ttbot_pose_is_none:
+                # rospy.loginfo('Waiting for grid and pose')
                 continue
             
             if self.path is None or self.currIdx == -1:
@@ -294,7 +216,6 @@ class Task1Node:
         return currIdx
     def pid_controller(self, current_pose: PoseStamped, goal_pose: PoseStamped, global_goal: PoseStamped):
         '''Return linear and angular velocity'''
-        heading_tolerance = 10 # degrees
 
         # Calculate distance and heading errors
         cp = current_pose.pose.position
@@ -318,7 +239,7 @@ class Task1Node:
         dt = rospy.Time().now().to_sec() - self.last_time if self.last_time else None
 
         heading_control = self.heading_pid.update(heading_error, dt)
-        if abs(heading_error) > heading_tolerance/180*np.pi:
+        if abs(heading_error) > self.heading_tolerance/180*np.pi:
             return 0, heading_control
         # PID controller for distance
         distance_control = self.distance_pid.update(dist_error, dt)
@@ -333,14 +254,14 @@ class Task1Node:
         self.cmd_vel_pub.publish(msg)
         # rospy.loginfo(f'linear: {linear:.2f}, angular: {angular:.2f}')
 
-    def make_marker(self, x, y, id=0, size=0.15, rgb=(0,0,0)):
+    def make_marker(self, pose:PoseStamped, id=0, size=0.15, rgb=(0,0,0)):
         marker = Marker()
         marker.header.frame_id = "map"
         marker.id = id
         marker.type = marker.SPHERE
         marker.action = marker.ADD
-        marker.pose.position.x = x
-        marker.pose.position.y = y
+        marker.pose.position.x = pose.pose.position.x
+        marker.pose.position.y = pose.pose.position.y
         marker.pose.position.z = 0
         marker.pose.orientation.w = 1.0
         marker.scale.x = marker.scale.y = marker.scale.z = size
@@ -349,45 +270,14 @@ class Task1Node:
         marker.color.g = rgb[1]
         marker.color.b = rgb[2]
         return marker
-    def make_path(self,raw_path):
-        if raw_path is None:
-            return
-        path = Path()
-        path.header.frame_id = 'map'
-        for coord in raw_path:
-            p = PoseStamped()
-            x, y = self.pixel_to_world(*coord)
-            p.pose.position.x = x
-            p.pose.position.y = y
-            path.poses.append(p)
-        return path
     def publish_frontiers(self, frontiers):
         marker_array = MarkerArray()
-        marker_array.markers = [self.make_marker(frontier[0],frontier[1],idx,rgb=(0,0,1)) for idx,frontier in enumerate(frontiers)]
-        self.frontiers_pub.publish(marker_array)       
-    def pixel_to_world(self, x: int, y: int) -> tuple:
-        # Compute the coordinates of the center of the cell at (x, y)
-        cell_size = self.resolution
-        x_center = (x + 0.5) * cell_size
-        y_center = (y + 0.5) * cell_size
-        
-        # Compute the coordinates of the center of the grid in the world frame
-        x_offset = self.origin.position.x
-        y_offset = self.origin.position.y
-        theta = np.arccos(self.origin.orientation.w) * 2  # Convert quaternion to angle
-        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
-        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
-        
-        return y_center_world, x_center_world
-    def world_to_pixel(self, world_x, world_y):
-        origin_x = self.origin.position.x
-        origin_y = self.origin.position.y
-        resolution = self.resolution
-
-        pixel_x = int((world_x - origin_x) / resolution)
-        pixel_y = int((world_y - origin_y) / resolution)
-
-        return (pixel_y, pixel_x)
+        marker_array.markers = [self.make_marker(frontier,idx,rgb=(0,0,1)) for idx,frontier in enumerate(frontiers)]
+        self.frontiers_pub.publish(marker_array)  
+    def publish_raw_frontiers(self, frontiers):
+        marker_array = MarkerArray()
+        marker_array.markers = [self.make_marker(frontier,idx,rgb=(0,1,1),size=0.05) for idx,frontier in enumerate(frontiers)]
+        self.raw_frontiers_pub.publish(marker_array)       
 
 class PIDController:
     def __init__(self, kp, ki, kd, output_limits=None):

@@ -11,26 +11,29 @@ from copy import copy
 import rospy
 from collections import deque
 import cv2
-from nav_msgs.msg import OccupancyGrid
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Pose
+from nav_msgs.msg import OccupancyGrid, Path
 import cv2
 import numpy as np
 import yaml
 
 
 class Map():
-    def __init__(self, map:Union[np.ndarray,str], dilate_size:int=7):
-        if isinstance(map, np.ndarray):
-            self.map = map
+    def __init__(self, grid:Union[OccupancyGrid,str], dilate_size=3):
+        if isinstance(grid, OccupancyGrid):
+            self.origin = grid.info.origin
+            self.resolution = grid.info.resolution
+            self.map = np.array(grid.data).reshape((grid.info.height, grid.info.width))
             self.map[self.map < 0] = 50  # set all unknown cells to 255
-            self.map = np.clip(self.map, 0, None).astype(np.uint8) # use uint8 to save memory
-        elif isinstance(map, str):
+            self.map = self.map.astype(np.uint8)
+        elif isinstance(grid, str):
             self.map = None
             self.__open_map(map)
         else:
             raise Exception("Map.__init__: invalid map type")
         
         unknown_erode_size = 3
-        occupied_dilate_size = 3
+        occupied_dilate_size = dilate_size
         free_erode_size = 3
         free_dilate_size = 3
     
@@ -40,7 +43,7 @@ class Map():
 
         # Erode and dilate the unknown_mask
         unknown_mask = cv2.erode(unknown_mask, self.kernel(unknown_erode_size), iterations=1)
-        occupied_mask = cv2.dilate(occupied_mask, self.kernel(occupied_dilate_size), iterations=3)
+        occupied_mask = cv2.dilate(occupied_mask, self.kernel(occupied_dilate_size), iterations=1)
 
         # Erode and dilate the free_mask
         free_mask = cv2.erode(free_mask, self.kernel(free_erode_size), iterations=1)
@@ -59,21 +62,42 @@ class Map():
         return np.ones((size, size), dtype=np.uint8)
     
     def downsize(self, downsize_factor):
+        if downsize_factor > min(self.map.shape[0], self.map.shape[1]):
+            downsize_factor = min(self.map.shape[0], self.map.shape[1])
         if downsize_factor != 1:
             self.map = cv2.resize(self.map, (self.map.shape[0]//downsize_factor, self.map.shape[1]//downsize_factor), interpolation=cv2.INTER_NEAREST)
         self.downsize_factor = downsize_factor
+    
+    def pixel_to_world(self, x: int, y: int) -> PoseStamped:
+        # Compute the coordinates of the center of the cell at (x, y)
+        cell_size = self.resolution * self.downsize_factor
+        x_center = (x + 0.5) * cell_size
+        y_center = (y + 0.5) * cell_size
+        
+        # Compute the coordinates of the center of the grid in the world frame
+        x_offset = self.origin.position.x
+        y_offset = self.origin.position.y
+        theta = np.arccos(self.origin.orientation.w) * 2  # Convert quaternion to angle
+        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
+        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
+        
+        p = PoseStamped()
+        p.pose.position.x = y_center_world
+        p.pose.position.y = x_center_world
+        p.pose.orientation.w = 1
+        return p
+    
+    def world_to_pixel(self, pose:PoseStamped) -> tuple:
+        origin_x = self.origin.position.x
+        origin_y = self.origin.position.y
+        resolution = self.resolution * self.downsize_factor
+        pixel_x = int((pose.pose.position.x - origin_x) / resolution)
+        pixel_y = int((pose.pose.position.y - origin_y) / resolution)
+        return (pixel_y, pixel_x)
         
     def get_map(self):
         return self.map
-        
-    def dilate(self, size):
-        kernel = np.ones((size, size), dtype=np.uint8)
-        self.map = cv2.dilate(self.map, kernel, iterations=1)
-    
-    def erode(self, size):
-        kernel = np.ones((size, size), dtype=np.uint8)
-        self.map = cv2.erode(self.map, kernel, iterations=1)
-    
+
     def __open_map(self, map_name):
         with open(map_name + '.yaml', 'r') as f:
             map_dict = yaml.safe_load(f)
@@ -107,10 +131,11 @@ class Map():
                 if new_coord not in visited:
                     visited.add(new_coord)
                     queue.append(new_coord)
-        rospy.logerr("No valid point found")
+        rospy.logerr("map.find_closest_valid_point: no valid point found")
         return None
     
-    def display(self,path=None):
+    def display(self,path=None, delay=None):
+        # plt.close('all')
         if self.map is None:
             raise Exception("Map.display: map is None")
         fig, ax = plt.subplots()
@@ -131,24 +156,33 @@ class Map():
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         fig.colorbar(ax.get_images()[0], ax=ax)
-        plt.show()
+        plt.show(block=False)
+        if delay:
+            plt.pause(delay)
+            plt.close("all")
+
+        
+
 
 class AStar():
-    def __init__(self, map:Map, start:Tuple[int,int], end:Tuple[int,int], downsize_factor:int=1):
-        self.m:Map = map
-        self.map:np.ndarray = map.get_map()
+    def __init__(self, mp:Map, start:PoseStamped, end:Union[PoseStamped, Tuple[int,int]], downsize_factor:int=1):
+        self.mp:Map = mp
         self.q:List[Tuple(int,int)] = []
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
-        if downsize_factor > min(self.m.map.shape[0], self.m.map.shape[1]):
-            downsize_factor = min(self.m.map.shape[0], self.m.map.shape[1])
-        if downsize_factor != 1:
-            self.m.downsize(downsize_factor)
-        self.end = self.m.find_closest_valid_point(self.downsize(end))
-        self.start = self.m.find_closest_valid_point(self.downsize(start))
+        
+        self.mp.downsize(downsize_factor)
+        self.map_shape = np.array(self.mp.map.shape)
+        start = self.mp.world_to_pixel(start)
+        if isinstance(end, PoseStamped):
+            end = self.mp.world_to_pixel(end)
+        self.start = self.mp.find_closest_valid_point(start)
+        self.end = self.mp.find_closest_valid_point(end)
+        
         if not (isinstance(self.start[0], (int, np.integer)) and isinstance(self.start[1], (int, np.integer)) and isinstance(self.end[0], (int, np.integer)) and isinstance(self.end[1], (int, np.integer))):
             raise Exception(f"AStar.__init__: start or end is not an int tuple. start: {start}  end:{end}")
+        
         sqrt2 = 17
         one = 12
         sqrt5 = 27
@@ -157,13 +191,6 @@ class AStar():
             [1, 0, one], [0, 1, one], [-1, 0, one], [0, -1, one],
             [1,2,sqrt5],[2,1,sqrt5],[-1,2,sqrt5],[-2,1,sqrt5],[1,-2,sqrt5],[2,-1,sqrt5],[-1,-2,sqrt5],[-2,-1,sqrt5]
         ]).astype(int)
-        self.map_shape = np.array(self.map.shape)
-    
-    def downsize(self, point):
-        return tuple(np.array(point) // self.m.downsize_factor)
-    
-    def upsize(self, point):
-        return tuple(np.array(point) * self.m.downsize_factor)
 
     def __get_f_score(self, node:Tuple[int,int], parent_direction:Optional[np.array] = None) -> float:
         if node not in self.dist:
@@ -180,14 +207,13 @@ class AStar():
         direction_penalty *= 0.3*self.dist[node]
         return (self.dist[node] + direction_penalty) ** 2 + self.h[node], id(node) # A-star heuristic, distance + h (defined in __init__)
 
-    
     def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
         # Calculate the absolute coordinates of the neighboring pixels
         coords = np.array(coord + (0,)) + self.dirs
         # Check if the coordinates are within the image bounds
         in_bounds_mask = np.all((coords[:, :2] >= 0) & (coords[:, :2] < self.map_shape), axis=1)
         # Filter out the non-zero neighbors and apply the in_bounds_mask
-        zero_neighbors = self.map[coords[in_bounds_mask, 0], coords[in_bounds_mask, 1]] == 0
+        zero_neighbors = self.mp.map[coords[in_bounds_mask, 0], coords[in_bounds_mask, 1]] == 0
         return coords[in_bounds_mask][zero_neighbors]
 
     def solve(self):
@@ -212,8 +238,7 @@ class AStar():
                     # heapq.heappush(self.q, (self.__get_f_score(c), c))   # add c to the priority queue with new f score
                     parent_direction = np.array(u) - np.array(self.via[u]) if u in self.via else None
                     heapq.heappush(self.q, (self.__get_f_score(c, parent_direction), c))   # add c to the priority queue with new f score
-
-                    
+     
     def reconstruct_path(self):
         sn = self.start
         u = en = self.end                # end key index to start rewind at
@@ -238,6 +263,15 @@ class AStar():
                 result.append(curr)
         return result
     
+    def make_poses(self,raw_path):
+        if raw_path is None:
+            return
+        path = Path()
+        path.header.frame_id = 'map'
+        path.poses = [self.mp.pixel_to_world(*coord) for coord in raw_path]
+        return path
+       
+
     def run(self):
         self.solve()
         try:
@@ -246,6 +280,5 @@ class AStar():
             rospy.loginfo(f'astar.run: no path found, outside bounds ({e})')
             return None, np.Inf
         path = self.collapse_path(path)
-        if self.m.downsize_factor is not None:
-            path = np.array(path) * self.m.downsize_factor
-        return path, dist
+        poses = self.make_poses(path)
+        return poses, dist
