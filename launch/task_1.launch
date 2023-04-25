@@ -23,7 +23,7 @@
     <remap from="joint_states" to="joint_states" />
   </node> 
   
-  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" args="-urdf -model turtlebot3_waffle -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" launch-prefix="bash -c 'sleep 2; $0 $@' "/>
+  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" args="-urdf -model turtlebot3_waffle -x $(arg x_pos) -y $(arg y_pos) -z $(arg z_pos) -param robot_description" launch-prefix="bash -c 'sleep 7; $0 $@' "/>
 
   <!-- start gmapping to build map -->
   <!-- <include file="$(find turtlebot3_slam)/launch/turtlebot3_gmapping.launch">

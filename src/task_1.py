@@ -42,15 +42,17 @@ class Task1Node:
         self.ttbot_pose.pose.orientation.w = 1.0
         self.ttbot_pose_is_none = True
         
-        self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        # self.heading_pid = PIDController(3,0,0.3, [-2,2])
+        # self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        self.heading_pid = PIDController(5,0,0.7, [-3,3])
+        self.distance_pid = PIDController(1,0,0.3,[-1,1], 0.2)
         self.heading_tolerance = 20 # degrees
         self.currIdx = 0
         self.last_time = None
         
         self.k = 4 # kmeans
-        self.frontier_downsample = 3
-        self.replan_downsample = 1
+        self.frontier_downsample = 1
+        self.replan_downsample = 2
         self.dilate_size = 13
         self.map:Map = None
         
@@ -75,6 +77,7 @@ class Task1Node:
     def __grid_cb(self, data:OccupancyGrid):
         self.grid = data
         self.map = Map(data, self.dilate_size)
+        # self.map.downsize(self.replan_downsample)
         # self.map.display(delay=2)
         # self.replan()
    
@@ -119,13 +122,13 @@ class Task1Node:
             t = time.time_ns()
             # path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
             # mp.display(path)
-            rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e9:.2f}s ')
+            # rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e9:.2f}s ')
             # if path is None:
             #     rospy.logerr('select_frontier: no path found')
             #     continue
             dist = np.linalg.norm(frontier - np.array([current_position.pose.position.x, current_position.pose.position.y]))
-            if dist/cluster_size < best_score:
-                best_score = dist*cluster_size
+            if dist < best_score:
+                best_score = dist
                 best_frontier = frontier
         return best_frontier
 
@@ -151,7 +154,7 @@ class Task1Node:
         world_frontier = mp.pixel_to_world(frontier[0], frontier[1])
         self.selected_frontier_pub.publish(self.make_marker(world_frontier,0,rgb=(1,0,0)))
         
-        rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e9:.1f}s")
+        # rospy.loginfo(f"Found frontier in {(time.time_ns() - t)/1e9:.1f}s")
         return frontier
 
     def replan(self):
@@ -166,8 +169,9 @@ class Task1Node:
             rospy.logerr('node.replan: no map')
             return
         
-        start = self.ttbot_pose if self.path is None else self.path.poses[self.currIdx]
-        path, dist = AStar(self.map, start, self.frontier, self.replan_downsample).run()
+        start = self.ttbot_pose # if self.path is None else self.path.poses[self.currIdx]
+        # self.map.display()
+        path, dist = AStar(self.map, start, self.frontier).run()
         if path is None:
             rospy.logerr('node.replan: no path found')
             return
@@ -178,6 +182,7 @@ class Task1Node:
         rospy.loginfo(f'replan: planned path in {(time.time_ns() - t)/1e9:.1f}s')
         
     def run(self):
+        time.sleep(10)
         while not rospy.is_shutdown():
             if self.map is None or self.ttbot_pose_is_none:
                 # rospy.loginfo('Waiting for grid and pose')
