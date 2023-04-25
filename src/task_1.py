@@ -51,7 +51,7 @@ class Task1Node:
         self.k = 4 # kmeans
         self.frontier_downsample = 3
         self.replan_downsample = 1
-        self.dilate_size = 17
+        self.dilate_size = 13
         self.map:Map = None
         
     def __timer_cbk(self, event):
@@ -97,71 +97,33 @@ class Task1Node:
         # Perform a bitwise AND operation between the adjacent free space mask and the unexplored cells mask
         frontier_mask = cv2.bitwise_and(adjacent_free_space_binary, unexplored_mask)
         
-        frontier_points = cv2.findNonZero(frontier_mask)
-        frontier_points = np.squeeze(frontier_points, axis=1)
-        return np.flip(frontier_points, axis=1)
-   
-    # def kmeans(self, points, k):
-    #     # Set the termination criteria for the K-means algorithm (either 100 iterations or an epsilon of 1.0)
-    #     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1.0)
-
-    #     # Apply the OpenCV K-means algorithm
-    #     rospy.loginfo(f'points: {points.shape}')
-    #     ret, labels, centroids = cv2.kmeans(points.astype(np.float32), k, None, criteria, 2, cv2.KMEANS_RANDOM_CENTERS)
-
-    #     # Compute the number of points in each cluster
-    #     cluster_sizes = [np.sum(labels == i) for i in range(k)]
-
-    #     return [tuple(c) for c in centroids.astype(np.uint8)], np.array(cluster_sizes) / np.sum(cluster_sizes)
-    
-    # def kmeans(self, points, k):
-    #      # Randomly initialize k cluster centroids
-    #      centroids = points[np.random.choice(len(points), k, replace=False), :]
-
-    #      # Initialize cluster assignments for each point
-    #      labels = np.zeros(len(points))
-
-    #      while True:
-    #          # Compute the squared Euclidean distance between each point and each centroid
-    #          sqdistances = np.sum((points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2, axis=-1)
-
-    #          # Assign each point to the closest centroid
-    #          new_labels = np.argmin(sqdistances, axis=1)
-
-    #          # If no points have changed cluster assignments, terminate
-    #          if np.array_equal(labels, new_labels):
-    #              break
-
-    #          # Update cluster assignments and centroids
-    #          labels = new_labels
-    #          for i in range(k):
-    #              centroids[i, :] = np.mean(points[labels == i, :], axis=0)
-
-    #      # Compute the number of points in each cluster
-    #      cluster_sizes = [np.sum(labels == i) for i in range(k)]
-    #      return [tuple(c) for c in centroids], cluster_sizes / np.sum(cluster_sizes)
+        # frontier_points = cv2.findNonZero(frontier_mask)
+        # frontier_points = np.squeeze(frontier_points, axis=1)
+        Y, X = np.where(frontier_mask > 0)
+        # return np.flip(frontier_points, axis=1)
+        return np.column_stack((Y,X))
    
     def kmeans(self,points:np.ndarray, k):
         # Set criteria and apply k-means
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 1000, 0.2)
-        _, labels, centers = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100000, 10)
+        _, labels, (centers) = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
         # Calculate the size of each cluster as a fraction of the total samples
         unique_labels, counts = np.unique(labels, return_counts=True)
-        centers = centers.astype(np.uint8)
-        rospy.loginfo(f'kmeans: {centers}')
-        return (tuple(c) for c in centers), counts / np.sum(counts)
+        centers = centers.astype(np.uint16)
+        return [tuple(c) for c in centers], counts / np.sum(counts)
    
     def select_frontier(self, mp:Map, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:PoseStamped):
         best_score = np.Inf
         best_frontier = None
         for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
-            path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
+            # path, dist = AStar(mp, current_position, frontier, self.frontier_downsample).run()
+            # mp.display(path)
             rospy.loginfo(f'select_frontier astar done in {(time.time_ns()-t)/1e9:.2f}s ')
-            if path is None:
-                rospy.logerr('select_frontier: no path found')
-                continue
+            # if path is None:
+            #     rospy.logerr('select_frontier: no path found')
+            #     continue
+            dist = np.linalg.norm(frontier - np.array([current_position.pose.position.x, current_position.pose.position.y]))
             if dist/cluster_size < best_score:
                 best_score = dist*cluster_size
                 best_frontier = frontier
@@ -174,7 +136,10 @@ class Task1Node:
             return None
         mp = Map(self.grid, self.dilate_size)
         raw_frontiers = self.find_frontiers(mp.map)
-        self.publish_raw_frontiers([mp.pixel_to_world(x, y) for x, y in raw_frontiers])
+        if len(raw_frontiers) < self.k:
+            return None
+        rf = [tuple(x) for x in raw_frontiers]
+        self.publish_raw_frontiers([mp.pixel_to_world(x, y) for x, y in rf])
         
         frontiers, sizes = self.kmeans(raw_frontiers, self.k)
         self.publish_frontiers([mp.pixel_to_world(x, y) for x, y in frontiers])
@@ -210,7 +175,7 @@ class Task1Node:
         self.path = path
         self.currIdx = 0
         self.path_pub.publish(self.path)
-        rospy.loginfo(f'Planned path in {(time.time_ns() - t)/1e9:.1f}s')
+        rospy.loginfo(f'replan: planned path in {(time.time_ns() - t)/1e9:.1f}s')
         
     def run(self):
         while not rospy.is_shutdown():
@@ -223,9 +188,10 @@ class Task1Node:
                 self.move_ttbot(0, 0)
                 self.frontier = self.get_frontier()
                 if self.frontier is None:
-                    rospy.logerr('node.run: no frontier')
+                    rospy.logerr('node.run: no frontiers')
                     continue
                 self.replan()
+
             
             self.currIdx = self.get_path_idx(self.path, self.ttbot_pose, self.currIdx)
             if self.currIdx == -1:
