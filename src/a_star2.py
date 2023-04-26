@@ -76,14 +76,15 @@ class Map():
         y_center = (y + 0.5) * cell_size
         
         # Compute the coordinates of the center of the grid in the world frame
+        # rospy.loginfo(f'origin: {self.origin}')
         x_offset, y_offset, w = self.origin
         theta = np.arccos(w) * 2  # Convert quaternion to angle
-        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
-        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
+        x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) - x_offset
+        y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) - y_offset
         
         p = PoseStamped()
-        p.pose.position.x = y_center_world
-        p.pose.position.y = x_center_world
+        p.pose.position.x = -y_center_world
+        p.pose.position.y = -x_center_world
         p.pose.orientation.w = 1
         return p
     
@@ -100,12 +101,16 @@ class Map():
     def __open_map(self, map_name):
         with open(map_name + '.yaml', 'r') as f:
             map_dict = yaml.load(f)
-            self.thresh = map_dict['occupied_thresh'] * 255
+            self.thresh = 250# map_dict['occupied_thresh'] * 255
             self.origin = map_dict['origin']
             self.resolution = map_dict['resolution']
-        self.map = cv2.imread(map_name+'.pgm', cv2.IMREAD_GRAYSCALE)
+        self.map = cv2.imread(map_name+'.pgm', cv2.IMREAD_UNCHANGED)
         # self.map = cv2.resize(self.map, (200, 200), interpolation=cv2.INTER_AREA)
         cv2.threshold(self.map, self.thresh, 100, cv2.THRESH_BINARY_INV, dst=self.map)
+        # self.map = cv2.rotate(self.map, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        # self.map = cv2.flip(self.map, 1)
+        self.map = cv2.flip(self.map, 0)
+        
         
     
     def __is_valid(self, coord):
@@ -168,7 +173,7 @@ class Map():
             path_array = copy(self.map)
             for p in path.poses:
                 tup = self.world_to_pixel(p)
-                path_array[tup] = 30
+                path_array[tup] = 200
             data = path_array
         else:
             data = self.map
@@ -194,13 +199,18 @@ class AStar():
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
+        # rospy.loginfo("AStar: start: %s, end: %s", start, end)
         
         self.map_shape = np.array(self.mp.map.shape)
         start = self.mp.world_to_pixel(start)
+        self.mp.map[start] = 150
         if isinstance(end, PoseStamped):
             end = self.mp.world_to_pixel(end)
+            self.mp.map[end] = 250
         self.start = self.mp.find_closest_valid_point(start)
         self.end = self.mp.find_closest_valid_point(end)
+        
+        # rospy.loginfo(f'astar: {self.start}, {self.end}')
         
         sqrt2 = 17
         one = 12
@@ -378,5 +388,6 @@ class AStar():
             rospy.loginfo(f'astar.run: no path found, outside bounds ({e})')
             return None, np.Inf
         path = self.collapse_path(path)
+        # rospy.loginfo(f'astar path: {path}')
         poses = self.make_poses(path)
         return poses, dist*np.sqrt(2)
