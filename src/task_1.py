@@ -187,7 +187,7 @@ class Task1Node:
         rospy.loginfo(f'replan: planned path in {(time.time_ns() - t)/1e9:.1f}s')
         
     def run(self):
-        time.sleep(10)
+        # time.sleep(10)
         while not rospy.is_shutdown():
             if self.map is None or self.ttbot_pose_is_none:
                 # rospy.loginfo('Waiting for grid and pose')
