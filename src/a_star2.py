@@ -43,6 +43,7 @@ class Map():
 
         # Erode and dilate the unknown_mask
         unknown_mask = cv2.erode(unknown_mask, self.kernel(unknown_erode_size), iterations=1)
+        unknown_mask = cv2.dilate(unknown_mask, self.kernel(unknown_erode_size), iterations=2)
         occupied_mask = cv2.dilate(occupied_mask, self.kernel(occupied_dilate_size), iterations=1)
 
         # Erode and dilate the free_mask

@@ -24,6 +24,7 @@ class Task1Node:
         self.listener = tf.TransformListener()
         rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
+        rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
         
         self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=2)
         self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=2)
@@ -42,10 +43,10 @@ class Task1Node:
         self.ttbot_pose.pose.orientation.w = 1.0
         self.ttbot_pose_is_none = True
         
-        # self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        # self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
-        self.heading_pid = PIDController(5,0,0.7, [-3,3])
-        self.distance_pid = PIDController(1,0,0.3,[-1,1], 0.2)
+        self.heading_pid = PIDController(3,0,0.3, [-2,2])
+        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        # self.heading_pid = PIDController(3,0,0.3, [-3,3])
+        # self.distance_pid = PIDController(0.8,0,0.2,[-0.8,0.8], 0.2)
         self.heading_tolerance = 20 # degrees
         self.currIdx = 0
         self.last_time = None
@@ -55,6 +56,9 @@ class Task1Node:
         self.replan_downsample = 2
         self.dilate_size = 13
         self.map:Map = None
+    
+    def __odom_cbk(self, data:Odometry):
+        self.ttbot_pose.pose = data.pose.pose
         
     def __timer_cbk(self, event):
         if self.grid is None:
@@ -74,6 +78,7 @@ class Task1Node:
         except Exception as e:
             rospy.logerr(f'__timer_cbk: {e}')
             pass
+    
     def __grid_cb(self, data:OccupancyGrid):
         self.grid = data
         self.map = Map(data, self.dilate_size)
