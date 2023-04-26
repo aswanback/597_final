@@ -8,7 +8,7 @@
   <env name="GAZEBO_MODEL_PATH" value="$(find final_project)/models" />
 
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
-    <arg name="world_name" value="$(find final_project)/worlds/house_v2.world"/>
+    <arg name="world_name" value="$(find final_project)/worlds/house_v3.world"/>
     <arg name="paused" value="false"/>
     <arg name="use_sim_time" value="true"/>
     <arg name="gui" value="true"/>

@@ -24,7 +24,7 @@ class Task1Node:
         self.listener = tf.TransformListener()
         rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
-        rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
+        # rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
         
         self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=2)
         self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=2)
@@ -43,11 +43,11 @@ class Task1Node:
         self.ttbot_pose.pose.orientation.w = 1.0
         self.ttbot_pose_is_none = True
         
-        self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
-        # self.heading_pid = PIDController(3,0,0.3, [-3,3])
-        # self.distance_pid = PIDController(0.8,0,0.2,[-0.8,0.8], 0.2)
-        self.heading_tolerance = 20 # degrees
+        # self.heading_pid = PIDController(3,0,0.3, [-2,2])
+        # self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        self.heading_pid = PIDController(2.5,0,7, [-5,5])
+        self.distance_pid = PIDController(0.8,0.1,0.4,[-1.1,1.1], 0.3)
+        self.heading_tolerance = 10 # degrees
         self.currIdx = 0
         self.last_time = None
         
@@ -56,9 +56,10 @@ class Task1Node:
         self.replan_downsample = 2
         self.dilate_size = 13
         self.map:Map = None
+        self.last = (None, None)
     
-    def __odom_cbk(self, data:Odometry):
-        self.ttbot_pose.pose = data.pose.pose
+    # def __odom_cbk(self, data:Odometry):
+    #     self.ttbot_pose.pose = data.pose.pose
         
     def __timer_cbk(self, event):
         if self.grid is None:
@@ -189,6 +190,7 @@ class Task1Node:
     def run(self):
         # time.sleep(10)
         while not rospy.is_shutdown():
+            t = time.time_ns()
             if self.map is None or self.ttbot_pose_is_none:
                 # rospy.loginfo('Waiting for grid and pose')
                 continue
@@ -201,7 +203,6 @@ class Task1Node:
                     rospy.logerr('node.run: no frontiers')
                     continue
                 self.replan()
-
             
             self.currIdx = self.get_path_idx(self.path, self.ttbot_pose, self.currIdx)
             if self.currIdx == -1:
@@ -313,6 +314,7 @@ class PIDController:
         self.last_error = error
 
         output = self.kp * error + self.ki * self.integral + self.kd * derivative
+        # rospy.loginfo(f'error: {error:.2f}, integral: {self.integral:.2f}, derivative: {derivative:.2f}, output: {output:.2f}')
 
         if self.output_limits:
             output = np.clip(output, self.output_limits[0], self.output_limits[1])
