@@ -42,66 +42,51 @@ class Map():
             self.__open_map(grid)
         else:
             raise Exception("Map.__init__: invalid map type")
-        
         unknown_erode_size = 3
         occupied_dilate_size = dilate_size
         free_erode_size = 3
         free_dilate_size = 3
-    
         occupied_mask = cv2.inRange(self.map, 100, 100)
         unknown_mask = cv2.inRange(self.map, 50, 50)
         free_mask = cv2.inRange(self.map, 0, 0)
-        
         unknown_mask = cv2.erode(unknown_mask, self.kernel(unknown_erode_size), iterations=1)
         unknown_mask = cv2.dilate(unknown_mask, self.kernel(unknown_erode_size), iterations=2)
         occupied_mask = cv2.dilate(occupied_mask, self.kernel(occupied_dilate_size), iterations=1)
-        
         free_mask = cv2.erode(free_mask, self.kernel(free_erode_size), iterations=1)
         free_mask = cv2.dilate(free_mask, self.kernel(free_dilate_size), iterations=1)
-        
         modified_map = np.zeros_like(self.map)
         modified_map[free_mask > 0] = 0
         modified_map[unknown_mask > 0] = 50
         modified_map[occupied_mask > 0] = 100
         self.map = modified_map
-        
         self.downsize_factor = 1
-    
     def kernel(self, size):
         return np.ones((size, size), dtype=np.uint8)
-    
     def downsize(self, downsize_factor):
         if downsize_factor > min(self.map.shape[0], self.map.shape[1]):
             downsize_factor = min(self.map.shape[0], self.map.shape[1])
         if downsize_factor != 1:
             self.map = cv2.resize(self.map, (self.map.shape[0]//downsize_factor, self.map.shape[1]//downsize_factor), interpolation=cv2.INTER_NEAREST)
         self.downsize_factor = downsize_factor
-    
     def pixel_to_world(self, x: int, y: int) -> PoseStamped:
-        
         cell_size = self.resolution * self.downsize_factor
         x_center = (x + 0.5) * cell_size
         y_center = (y + 0.5) * cell_size
-        
-        
         x_offset, y_offset, w = self.origin
         theta = np.arccos(w) * 2  
         x_center_world = x_center * np.cos(theta) - y_center * np.sin(theta) + x_offset
         y_center_world = x_center * np.sin(theta) + y_center * np.cos(theta) + y_offset
-        
         p = PoseStamped()
         p.pose.position.x = y_center_world
         p.pose.position.y = x_center_world
         p.pose.orientation.w = 1
         return p
-    
     def world_to_pixel(self, pose:PoseStamped) -> tuple:
         origin_x, origin_y, w = self.origin
         resolution = self.resolution * self.downsize_factor
         pixel_x = int((pose.pose.position.x - origin_x) / resolution)
         pixel_y = int((pose.pose.position.y - origin_y) / resolution)
         return (pixel_y, pixel_x)
-        
     def get_map(self):
         return self.map
     def __open_map(self, map_name):
@@ -111,18 +96,13 @@ class Map():
             self.origin = map_dict['origin']
             self.resolution = map_dict['resolution']
         self.map = cv2.imread(map_name+'.pgm', cv2.IMREAD_GRAYSCALE)
-        
         cv2.threshold(self.map, self.thresh, 100, cv2.THRESH_BINARY_INV, dst=self.map)
-        
-    
     def __is_valid(self, coord):
         x, y = coord
         return 0 <= x < self.map.shape[0] and 0 <= y < self.map.shape[1] and self.map[x, y] == 0
     def find_closest_valid_point(self, goal_coord):
-        
         if self.__is_valid(goal_coord):
             return tuple(goal_coord)
-        
         queue = deque([goal_coord])
         visited = set()
         moves = [(0, 1), (1, 0), (0, -1), (-1, 0), (-1, -1), (1, 1), (-1, 1), (1, -1)]
@@ -138,20 +118,6 @@ class Map():
                     queue.append(new_coord)
         rospy.logerr("map.find_closest_valid_point: no valid point found")
         return None
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     def display(self,path:Path=None):
         if self.map is None:
             raise Exception("Map.display: map is None")
@@ -164,9 +130,7 @@ class Map():
             data = path_array
         else:
             data = self.map
-        
         data = np.rot90(data, k=3, axes=(0, 1))
-        
         ax.imshow(data)
         nonzero_indices = np.nonzero(data)
         b = 5
@@ -176,7 +140,6 @@ class Map():
         ax.set_ylim(y_min, y_max)
         fig.colorbar(ax.get_images()[0], ax=ax)
         plt.show()
-      
 class AStar():
     def __init__(self, mp:Map, start:PoseStamped, end:Union[PoseStamped, Tuple[int,int]]):
         self.mp:Map = mp
@@ -184,14 +147,12 @@ class AStar():
         self.dist = {}                  
         self.h = {}                     
         self.via = {}
-        
         self.map_shape = np.array(self.mp.map.shape)
         start = self.mp.world_to_pixel(start)
         if isinstance(end, PoseStamped):
             end = self.mp.world_to_pixel(end)
         self.start = self.mp.find_closest_valid_point(start)
         self.end = self.mp.find_closest_valid_point(end)
-        
         sqrt2 = 17
         one = 12
         sqrt5 = 27
@@ -201,84 +162,11 @@ class AStar():
             [1,2,sqrt5],[2,1,sqrt5],[-1,2,sqrt5],[-2,1,sqrt5],[1,-2,sqrt5],[2,-1,sqrt5],[-1,-2,sqrt5],[-2,-1,sqrt5]
         ]).astype(int)
         self.dir_tuples = [tuple(d) for d in self.dirs]
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-        
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-        
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-        
-    
-    
-    
-        
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     def __get_f_score(self, node:Tuple[int,int], parent_direction:Optional[np.array] = None) -> float:
         if node not in self.dist:
             self.dist[node] = np.Inf
         if node not in self.h:
             self.h[node] = (self.end[0]-node[0])**2 + (self.end[1]-node[1])**2
-        
         if parent_direction is not None:
             current_direction = np.array(node) - np.array(self.via[node])
             current_direction = current_direction / np.linalg.norm(current_direction)
@@ -288,14 +176,10 @@ class AStar():
         direction_penalty *= 1*self.dist[node]
         return self.dist[node] ** 2 + direction_penalty + self.h[node], id(node) 
     def get_children(self, coord: Tuple[int, int]) -> List[Tuple[int, int]]:
-        
         coords = np.array(coord + (0,)) + self.dirs
-        
         in_bounds_mask = np.all((coords[:, :2] >= 0) & (coords[:, :2] < self.map_shape), axis=1)
-        
         zero_neighbors = self.mp.map[coords[in_bounds_mask, 0], coords[in_bounds_mask, 1]] == 0
         return coords[in_bounds_mask][zero_neighbors]
-    
     def solve(self):
         sn = self.start
         en = self.end
@@ -316,10 +200,8 @@ class AStar():
                 if new_dist < self.dist[c]:  
                     self.dist[c] = new_dist  
                     self.via[c] = u     
-                    
                     parent_direction = np.array(u) - np.array(self.via[u]) if u in self.via else None
                     heapq.heappush(self.q, (self.__get_f_score(c, parent_direction), c))   
-    
     def reconstruct_path(self):
         sn = self.start
         u = en = self.end                
@@ -328,7 +210,6 @@ class AStar():
             u = self.via[u]         
             path.insert(0, u)          
         return path, self.dist[en]            
-    
     def collapse_path(self, path):
         ''' Collapses a path by removing redundant waypoints'''
         if len(path) < 3:
@@ -343,7 +224,6 @@ class AStar():
             else:
                 result.append(curr)
         return result
-    
     def make_poses(self,raw_path):
         if raw_path is None:
             return
@@ -351,7 +231,6 @@ class AStar():
         path.header.frame_id = 'map'
         path.poses = [self.mp.pixel_to_world(*coord) for coord in raw_path]
         return path
-       
     def run(self):
         self.solve()
         try:
@@ -369,15 +248,12 @@ class Task1Node:
         self.listener = tf.TransformListener()
         rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
         rospy.Subscriber("/map", OccupancyGrid, self.__grid_cb)
-        
-        
         self.selected_frontier_pub = rospy.Publisher('/selected_frontier',Marker,queue_size=2)
         self.frontiers_pub = rospy.Publisher("/frontiers", MarkerArray, queue_size=2)
         self.raw_frontiers_pub = rospy.Publisher("/raw_frontiers", MarkerArray, queue_size=2)
         self.path_pub = rospy.Publisher("/path", Path, queue_size=2)
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=2)
         self.ttbot_pub = rospy.Publisher('ttbot_pose', PoseStamped, queue_size=2)
-        
         self.grid:OccupancyGrid = None
         self.resolution:float = None
         self.origin:Pose = None
@@ -387,31 +263,21 @@ class Task1Node:
         self.ttbot_pose.header.frame_id = 'map'
         self.ttbot_pose.pose.orientation.w = 1.0
         self.ttbot_pose_is_none = True
-        
-        
-        
         self.heading_pid = PIDController(2.5,0,7, [-5,5])
         self.distance_pid = PIDController(0.8,0.1,0.4,[-1.1,1.1], 0.3)
         self.heading_tolerance = 10 
         self.currIdx = 0
         self.last_time = None
-        
         self.k = 4 
         self.frontier_downsample = 1
         self.replan_downsample = 2
         self.dilate_size = 13
         self.map:Map = None
         self.last = (None, None)
-    
-    
-    
-        
     def __timer_cbk(self, event):
         if self.grid is None:
-            
             return
         try:
-            
             (position, heading) = self.listener.lookupTransform('/map', '/base_link', rospy.Time(0))
             self.ttbot_pose.pose.position.x = position[0]
             self.ttbot_pose.pose.position.y = position[1]
@@ -424,55 +290,31 @@ class Task1Node:
         except Exception as e:
             rospy.logerr(f'__timer_cbk: {e}')
             pass
-    
     def __grid_cb(self, data:OccupancyGrid):
         self.grid = data
         self.map = Map(data, self.dilate_size)
-        
-        
-        
-   
     def find_frontiers(self, map):
-        
         free_space_mask = cv2.inRange(map, 0, 0)
         unexplored_mask = cv2.inRange(map, 50, 50)
-        
         kernel = np.array([[1, 1, 1],
                         [1, 0, 1],
                         [1, 1, 1]], dtype=np.uint8)
-        
         adjacent_free_space_mask = cv2.filter2D(free_space_mask, -1, kernel)
-        
         _, adjacent_free_space_binary = cv2.threshold(adjacent_free_space_mask, 1, 255, cv2.THRESH_BINARY)
-        
         frontier_mask = cv2.bitwise_and(adjacent_free_space_binary, unexplored_mask)
-        
-        
-        
         Y, X = np.where(frontier_mask > 0)
-        
         return np.column_stack((Y,X))
-   
     def kmeans(self,points:np.ndarray, k):
-        
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100000, 10)
         _, labels, (centers) = cv2.kmeans(points.astype(np.float32), k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-        
         unique_labels, counts = np.unique(labels, return_counts=True)
         centers = centers.astype(np.uint16)
         return [tuple(c) for c in centers], counts / np.sum(counts)
-   
     def select_frontier(self, mp:Map, frontiers:List[Tuple[int,int]], cluster_sizes:List[int], current_position:PoseStamped):
         best_score = np.Inf
         best_frontier = None
         for cluster_size,frontier in zip(cluster_sizes,frontiers):
             t = time.time_ns()
-            
-            
-            
-            
-            
-            
             dist = np.linalg.norm(frontier - np.array([current_position.pose.position.x, current_position.pose.position.y]))
             if dist < best_score:
                 best_score = dist
@@ -489,18 +331,14 @@ class Task1Node:
             return None
         rf = [tuple(x) for x in raw_frontiers]
         self.publish_raw_frontiers([mp.pixel_to_world(x, y) for x, y in rf])
-        
         frontiers, sizes = self.kmeans(raw_frontiers, self.k)
         self.publish_frontiers([mp.pixel_to_world(x, y) for x, y in frontiers])
-        
         frontier = self.select_frontier(mp, frontiers, sizes, self.ttbot_pose)
         if frontier is None:
             rospy.logerr('node.get_frontier: no frontier found')
             return None
         world_frontier = mp.pixel_to_world(frontier[0], frontier[1])
         self.selected_frontier_pub.publish(self.make_marker(world_frontier,0,rgb=(1,0,0)))
-        
-        
         return frontier
     def replan(self):
         t = time.time_ns()
@@ -513,27 +351,20 @@ class Task1Node:
         if self.map is None:
             rospy.logerr('node.replan: no map')
             return
-        
         start = self.ttbot_pose 
-        
         path, dist = AStar(self.map, start, self.frontier).run()
         if path is None:
             rospy.logerr('node.replan: no path found')
             return
-        
         self.path = path
         self.currIdx = 0
         self.path_pub.publish(self.path)
         rospy.loginfo(f'replan: planned path in {(time.time_ns() - t)/1e9:.1f}s')
-        
     def run(self):
-        
         while not rospy.is_shutdown():
             t = time.time_ns()
             if self.map is None or self.ttbot_pose_is_none:
-                
                 continue
-            
             if self.path is None or self.currIdx == -1:
                 rospy.loginfo('Frontier reached')
                 self.move_ttbot(0, 0)
@@ -542,13 +373,11 @@ class Task1Node:
                     rospy.logerr('node.run: no frontiers')
                     continue
                 self.replan()
-            
             self.currIdx = self.get_path_idx(self.path, self.ttbot_pose, self.currIdx)
             if self.currIdx == -1:
                 continue
             linear, angular = self.pid_controller(self.ttbot_pose, self.path.poses[self.currIdx], self.path.poses[-1])
             self.move_ttbot(linear, angular)
-            
             self.rate.sleep()
     def get_path_idx(self, path:Path, vehicle_pose:PoseStamped, currIdx:int):
         """! Path follower.
@@ -573,31 +402,23 @@ class Task1Node:
         return currIdx
     def pid_controller(self, current_pose: PoseStamped, goal_pose: PoseStamped, global_goal: PoseStamped):
         '''Return linear and angular velocity'''
-        
         cp = current_pose.pose.position
         co = current_pose.pose.orientation
         gp = goal_pose.pose.position
         dist_error = np.sqrt((gp.x - cp.x)**2 + (gp.y - cp.y)**2)
         desired_heading = np.arctan2(gp.y - cp.y, gp.x - cp.x)
         heading_error = desired_heading - euler_from_quaternion([co.x, co.y, co.z, co.w])[2]
-        
         sgp = global_goal.pose.position
-        
         dist = np.sqrt((sgp.x - cp.x)**2 + (sgp.y - cp.y)**2)
         if dist < 0.15:
             rospy.loginfo('At goal, waiting')
-            
             dist_error = 0
-            
-        
         heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
         dt = rospy.Time().now().to_sec() - self.last_time if self.last_time else None
         heading_control = self.heading_pid.update(heading_error, dt)
         if abs(heading_error) > self.heading_tolerance/180*np.pi:
             return 0, heading_control
-        
         distance_control = self.distance_pid.update(dist_error, dt)
-        
         self.last_time = rospy.Time().now().to_sec()
         return distance_control, heading_control
     def move_ttbot(self, linear, angular):
@@ -605,7 +426,6 @@ class Task1Node:
         msg.linear.x = linear
         msg.angular.z = angular
         self.cmd_vel_pub.publish(msg)
-        
     def make_marker(self, pose:PoseStamped, id=0, size=0.15, rgb=(0,0,0)):
         marker = Marker()
         marker.header.frame_id = "map"
@@ -644,7 +464,6 @@ class PIDController:
         self.integral += error * dt if dt is not None else 0
         self.last_error = error
         output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        
         if self.output_limits:
             output = np.clip(output, self.output_limits[0], self.output_limits[1])
             if self.integral > 0 and output == self.output_limits[1]:
