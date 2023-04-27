@@ -616,17 +616,7 @@ class Navigation:
             if time.time() > start_time + (10 * 60) * 1000:  
                 rospy.signal_shutdown("Navigation timeout")
         rospy.signal_shutdown("Finished Cleanly")
-        derivative = (error - self.last_error) / dt if (dt is not None and dt != 0) else 0
-        self.integral += error * dt if dt is not None else 0
-        self.last_error = error
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        if self.output_limits:
-            output = np.clip(output, self.output_limits[0], self.output_limits[1])
-            if self.integral > 0 and output == self.output_limits[1]:
-                self.integral = 0
-            elif self.integral < 0 and output == self.output_limits[0]:
-                self.integral = 0
-        return output
+
 class PIDController:
     def __init__(self, kp, ki, kd, output_limits=None, min_output=None):
         self.kp = kp

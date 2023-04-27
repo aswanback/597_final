@@ -4,24 +4,22 @@
 #!/usr/bin/env python3
 
 #!/usr/bin/env python3
+from visualization_msgs.msg import MarkerArray, Marker
 
 import sys
 import numpy as np
 import time
 import rospy
-from tf.transformations import euler_from_quaternion
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+import tf
 from nav_msgs.msg import Path, Odometry
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 # from a_star2 import AStar, Map
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
 import rospkg
-
-
 import heapq
 from typing import Dict, List, Optional, Tuple, Union
-from graphviz import Graph
-from PIL import Image, ImageOps 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -36,7 +34,7 @@ from nav_msgs.msg import OccupancyGrid, Path
 import cv2
 import numpy as np
 import yaml
-
+from sensor_msgs.msg import LaserScan
 
 class Map():
     def __init__(self, grid:Union[OccupancyGrid,str], dilate_size=3):
@@ -209,9 +207,6 @@ class Map():
         ax.set_ylim(y_min, y_max)
         fig.colorbar(ax.get_images()[0], ax=ax)
         plt.show()
-      
-
-
 class AStar():
     def __init__(self, mp:Map, start:PoseStamped, end:Union[PoseStamped, Tuple[int,int]]):
         self.mp:Map = mp
@@ -422,13 +417,21 @@ class Navigation:
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.__goal_pose_cbk, queue_size=1)
         rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, self.__ttbot_pose_cbk, queue_size=10)
         rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
+        rospy.Subscriber('/scan', LaserScan, self.__scan_cbk)
+        rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
+        rospy.Timer(rospy.Duration(0.01), self.__timer2_cbk)
+        
         # Publishers
         self.path_pub = rospy.Publisher('global_plan', Path, queue_size=2)
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=2)
         self.odom_set_pub = rospy.Publisher('/initialpose',PoseWithCovarianceStamped, queue_size=2)
         self.pose_pub = rospy.Publisher('est_ttbot_pose', PoseStamped, queue_size=2)
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+        # self.tf_broadcaster = tf2_ros.TransformBroadcaster()
+        self.listener = tf.TransformListener()
         self.my_path_pub = rospy.Publisher('/path_topic',Path,queue_size=2)
+        self.points_pub = rospy.Publisher('/points',MarkerArray,queue_size=2)
+        self.ttbot_pub = rospy.Publisher('ttbot_pose', PoseStamped, queue_size=2)
+        self.vector_pub = rospy.Publisher('/vector',PoseStamped,queue_size=2)
         p = Path()
         p.header.frame_id = 'map'
         self.my_path_pub.publish(p)
@@ -453,10 +456,13 @@ class Navigation:
         
         # self.heading_pid = PIDController(3,0,0.3, [-2,2])
         # self.distance_pid = PIDController(0.5,0,0.1,[-1,1])
-        # self.heading_pid = PIDController(2.5,0,7, [-5,5])
-        # self.distance_pid = PIDController(0.8,0.1,0.4,[-1.1,1.1], 0.3)
-        self.heading_pid = PIDController(3,0,0.3, [-2,2])
-        self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        self.heading_pid = PIDController(2.5,0, 7, [-2.5,2.5])
+        self.distance_pid = PIDController(0.8,0.1,0.4,[-1.1,1.1], 0.3)
+        # self.heading_pid = PIDController(3,0,0.3, [-2,2])
+        # self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        
+        self.avoid_heading_pid = PIDController(2.5,0, 0.01, [-2.5,2.5])# PIDController(3,0,0.2, [-3,3])
+        self.avoid_velocity_pid = PIDController(0.8,0,0,[-5,5]) #PIDController(1,0,0.1, [-2,2])
         
         self.heading_tolerance = 10
         
@@ -468,6 +474,180 @@ class Navigation:
         self.last_time = None
         self.dt = None
         self.last_conf_time = None
+        self.i = 0
+        self.laser_scan = None
+        self.avoid_angle = 0
+        self.avoid_mag = 0
+        self.last_avoid_time = None
+    
+    # def detect_curved_areas(self, image):
+    #     # Convert the image to grayscale
+    #     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    #     # Apply Gaussian blur
+    #     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    #     # Apply Hough Circle Transform to detect circular shapes
+    #     circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 20, param1=2, param2=30, minRadius=0, maxRadius=200)
+
+    #     if circles is not None:
+    #         rospy.loginfo("Curved area detected")
+    #         circles = np.round(circles[0, :]).astype("int")
+
+    #         for (x, y, r) in circles:
+    #             # Draw the circle
+    #             cv2.circle(image, (x, y), r, (0, 0, 255), 2)
+
+    #             # Draw the center of the circle
+    #             cv2.circle(image, (x, y), 1, (255, 0, 0), 2)
+
+    #             # Print the location of the curved area
+    #             rospy.loginfo("Curved area detected at (x, y) = (%d, %d)", x, y)
+    #     return image
+    
+    # def __scan_cbk(self, msg:LaserScan):
+    #     rospy.loginfo(f'{msg.header.frame_id}')
+    #     SCALE_FACTOR = 50  # Adjust this to change the resolution of the image
+    #     IMAGE_SIZE = (500, 500)
+    #     # Create a blank image
+    #     image = np.zeros(IMAGE_SIZE, dtype=np.uint8)
+    #     _, image = cv2.threshold(image, 1, 255, cv2.THRESH_BINARY)
+        
+
+    #     angle = msg.angle_min + np.pi/2
+    #     for r in msg.ranges:
+    #         if r == float('inf') or r == -float('inf') or r == float('nan'):
+    #             angle += msg.angle_increment
+    #             continue
+
+    #         # Convert polar to Cartesian coordinates
+    #         x = r * np.cos(angle) * SCALE_FACTOR
+    #         y = r * np.sin(angle) * SCALE_FACTOR
+
+    #         # Convert coordinates to image coordinate system
+    #         img_x = int(IMAGE_SIZE[0] // 2 + x)
+    #         img_y = int(IMAGE_SIZE[1] // 2 - y)
+
+    #         if 0 <= img_x < IMAGE_SIZE[0] and 0 <= img_y < IMAGE_SIZE[1]:
+    #             cv2.circle(image, (img_x, img_y), 1, 255, -1)
+
+    #         angle += msg.angle_increment
+        
+    #     self.laser_image = image
+    #     # rospy.loginfo(f'{type(self.laser_image)} {self.laser_image.shape}')
+    #     # self.avoid_obstacle()
+    #     cv2.imshow("Laser Scan Image", image)
+    #     cv2.waitKey(1)
+    #     # Show image
+        
+        
+    # def calculate_vector(self, img:np.ndarray):
+    #     height, width = img.shape
+    #     center_x, center_y = width // 2, height // 2
+    #     magnitude_sum = np.array([0.0, 0.0])
+    #     for y in range(height):
+    #         for x in range(width):
+    #             if img[x, y] > 0:
+    #                 dx = x - center_x
+    #                 dy = y - center_y
+    #                 squared_distance = dx**2 + dy**2
+
+    #                 if squared_distance > 0:
+    #                     magnitude = 1 / squared_distance
+    #                     direction = np.array([dx, dy])
+    #                     scaled_vector = direction * magnitude
+    #                     magnitude_sum += scaled_vector
+
+    #     return magnitude_sum
+
+    def __scan_cbk(self, laser_scan:LaserScan):
+        self.laser_scan = laser_scan
+    
+    def __timer2_cbk(self, event):
+        if self.laser_scan is None:
+            return
+        laser_scan = self.laser_scan
+
+        ranges = np.array(laser_scan.ranges)
+        angles = np.array([laser_scan.angle_min + i * laser_scan.angle_increment for i in range(len(laser_scan.ranges))])
+
+        valid_indices = np.logical_and(np.isfinite(ranges), ranges <= 2, ranges >= 0.25)
+        valid_ranges = ranges[valid_indices]
+        valid_angles = angles[valid_indices]
+
+        sorted_indices = np.argsort(valid_ranges)[:30]
+        closest_ranges = valid_ranges[sorted_indices]
+        closest_angles = valid_angles[sorted_indices]
+
+        x_rel = closest_ranges * np.cos(closest_angles)
+        y_rel = closest_ranges * np.sin(closest_angles)
+        
+        tt = self.ttbot_pose.pose.orientation
+        curr = euler_from_quaternion([tt.x, tt.y, tt.z, tt.w])[2]
+
+        smx = np.sum(x_rel / (closest_ranges))
+        smy = np.sum(y_rel / (closest_ranges))
+
+        direction_angle = np.arctan2(smy, smx) + np.pi
+        magnitude = np.sqrt(smx**2 + smy**2)
+        # magnitude = np.sqrt(vector_sum_x**2 + vector_sum_y**2)
+        # direction_angle = np.arctan2(vector_sum_y, vector_sum_x)
+        
+        rot = quaternion_from_euler(0, 0, direction_angle + curr)
+        
+        p = PoseStamped()
+        p.pose.position.x = self.ttbot_pose.pose.position.x
+        p.pose.position.y = self.ttbot_pose.pose.position.y
+        p.pose.orientation.x = rot[0]
+        p.pose.orientation.y = rot[1]
+        p.pose.orientation.z = rot[2]
+        p.pose.orientation.w = rot[3]
+        p.header.frame_id = "map"
+        self.vector_pub.publish(p)
+        # rospy.loginfo(f'{magnitude:.2f} ')
+        tt = self.ttbot_pose.pose.position
+        self.avoid_mag = magnitude if self.make_cond(self.ttbot_pose) else 0
+        self.avoid_angle = direction_angle if self.make_cond(self.ttbot_pose) else 0
+        # return magnitude, direction_angle
+
+    
+    # def avoid_obstacle(self):
+    #     if self.laser_image is None:
+    #         return
+    #     vec = self.calculate_vector(self.laser_image)
+    #     # vec = -vec
+    #     # rospy.loginfo(f'Vector: {vec}')
+        
+    #     rot = quaternion_from_euler(0, 0, np.arctan2(vec[1], vec[0]))
+    #     # self.make_marker(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y, 1, 0.1, (1,0,0), rot[2])
+    #     # self.pub_marker.publish(self.make_marker(self.ttbot_pose.pose.position.x, self.ttbot_pose.pose.position.y, 1, 0.1, (1,0,0), rot[2]))
+    #     p = PoseStamped()
+    #     p.pose.position.x = self.ttbot_pose.pose.position.x
+    #     p.pose.position.y = self.ttbot_pose.pose.position.y
+    #     p.pose.orientation.w = rot[3]
+    #     p.header.frame_id = "map"
+    #     self.vector_pub.publish(p)
+
+               
+    def make_marker(self, x, y, id=0, size=0.15, rgb=(0,0,0), w=1.0):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.id = id
+        marker.type = marker.SPHERE
+        marker.action = marker.ADD
+        marker.pose.position.x = x
+        marker.pose.position.y = y
+        marker.pose.position.z = 0
+        marker.pose.orientation.w = w
+        marker.scale.x = marker.scale.y = marker.scale.z = size
+        marker.color.a = 1.0
+        marker.color.r = rgb[0]
+        marker.color.g = rgb[1]
+        marker.color.b = rgb[2]
+        return marker
+  
+
+
 
     def __odom_cbk(self, data:Odometry):
         ''' Callback to catch the position of the vehicle from odom.'''
@@ -475,7 +655,8 @@ class Navigation:
             self.ttbot_pose = PoseStamped()
         self.ttbot_pose.pose = data.pose.pose
         self.pose_pub.publish(self.ttbot_pose)
-    
+    def cond2(self, tt):
+        return -1 < tt.y < 4 
     def __goal_pose_cbk(self, data:PoseStamped):
         """! Callback to catch the goal pose.
         @param  data    PoseStamped object from RVIZ.
@@ -509,47 +690,39 @@ class Navigation:
                 
             rospy.loginfo(f'Locating...')
         else:
+            pass
             # rospy.loginfo(f'pose update')
 
             # Update base_link to odom transform instead of publishing to /initialpose
-            t = TransformStamped()
-            t.header.stamp = rospy.Time.now()
-            t.header.frame_id = "base_link"
-            t.child_frame_id = "odom"
-            t.header.stamp = rospy.Time.now()
-            t.transform.translation.x = -data.pose.pose.position.x
-            t.transform.translation.y = -data.pose.pose.position.y
-            t.transform.translation.z = -data.pose.pose.position.z
-            t.transform.rotation = data.pose.pose.orientation
+            # (trasn,rto) = self.listener.lookupTranform("base_link", "odom", rospy.Time().now())
+            # t = TransformStamped()
+            # t.header.stamp = rospy.Time.now()
+            # t.header.frame_id = "base_link"
+            # t.child_frame_id = "odom"
+            # t.header.stamp = rospy.Time.now()
+            # t.transform.translation.x = -data.pose.pose.position.x
+            # t.transform.translation.y = -data.pose.pose.position.y
+            # t.transform.translation.z = -data.pose.pose.position.z
+            # t.transform.rotation = data.pose.pose.orientation
 
-            self.tf_broadcaster.sendTransform(t)
-    
-    def get_lin_params(self):
-        x_pix_min = 72
-        x_pix_max = 119
-        y_pix_min = 80
-        y_pix_max = 127
-
-        x_min = -2.29
-        x_max = 2.36
-        y_min = -2.28
-        y_max = 2.30
-
-        x_const = (x_pix_min + x_pix_max) / 2
-        y_const = (y_pix_min + y_pix_max) / 2
-        x_mult = -(x_pix_max - x_pix_min) / (x_max - x_min)
-        y_mult = (y_pix_max - y_pix_min) / (y_max - y_min)
-
-        return x_mult, x_const, y_mult, y_const
-    def _model_to_screen(self, x, y):
-        # linear transformation with y and x switched for orientation
-        x_mult, x_const, y_mult, y_const = self.get_lin_params()
-        return int(x_mult * y + x_const), int(y_mult * x + y_const)
-    def _screen_to_model(self, x_pix, y_pix):
-        # linear de-transformation of _model_to_screen
-        x_mult, x_const, y_mult, y_const = self.get_lin_params()
-        return (y_pix - y_const) / y_mult, (x_pix - x_const) / x_mult
-    
+            # self.tf_broadcaster.sendTransform(t)
+            
+    def __timer_cbk(self, event):
+        try:
+            
+            (position, heading) = self.listener.lookupTransform('/map', '/base_link', rospy.Time(0))
+            self.ttbot_pose.pose.position.x = position[0]
+            self.ttbot_pose.pose.position.y = position[1]
+            self.ttbot_pose.pose.orientation.x = heading[0]
+            self.ttbot_pose.pose.orientation.y = heading[1]
+            self.ttbot_pose.pose.orientation.z = heading[2]
+            self.ttbot_pose.pose.orientation.w = heading[3]
+            self.ttbot_pub.publish(self.ttbot_pose)
+            self.ttbot_pose_is_none = False
+        except Exception as e:
+            # rospy.logerr(f'__timer_cbk: {e}')
+            pass
+        
     def a_star_path_planner(self, start_pose:PoseStamped, end_pose:PoseStamped):
         """! A Star path planner.
         @param  start_pose    PoseStamped object containing the start of the path to be created.
@@ -589,6 +762,9 @@ class Navigation:
             return -1
         return currIdx
 
+    def cond1(self, tt):
+        return -1 < tt.y < 4 
+    
     def pid_controller(self, current_pose: PoseStamped, goal_pose: PoseStamped):
         '''Return linear and angular velocity'''
 
@@ -607,7 +783,7 @@ class Navigation:
         if dist < 0.15:
             rospy.loginfo('At goal, waiting')
             # Adjust to goal heading
-            dist_error = 0
+            dist_error = None
             heading_error = euler_from_quaternion([sgo.x, sgo.y, sgo.z, sgo.w])[2] - euler_from_quaternion([co.x, co.y, co.z, co.w])[2]
         
         heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
@@ -629,6 +805,27 @@ class Navigation:
         msg.angular.z = angular
         self.cmd_vel_pub.publish(msg)
 
+    def avoid_pid(self, magnitude, angle):
+        dt = rospy.Time().now().to_sec() - self.last_avoid_time if self.last_avoid_time else None
+        
+        tt = self.ttbot_pose.pose.orientation
+        heading_error = angle - euler_from_quaternion([tt.x, tt.y, tt.z, tt.w])[2]
+        heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
+        
+        avoid_head_control = self.avoid_heading_pid.update(heading_error, dt)
+        if abs(heading_error) > 20/180*np.pi:
+            return 0, avoid_head_control
+        
+        avoid_vel_control = self.avoid_velocity_pid.update(magnitude / 10, dt)
+        
+        self.last_time = rospy.Time().now().to_sec()
+        return avoid_vel_control, avoid_head_control
+    
+    def make_cond(self, ttbot_pose):
+        tt = ttbot_pose.pose.position
+        return tt.x < 5.5 and tt.x > 4.4 and self.cond1(tt) or tt.x < -2 and tt.x > -3 and self.cond2(tt)
+        
+    
     def run(self):
         """! Main loop of the node. You need to wait until a new pose is published, create a path and then
         drive the vehicle towards the final pose.
@@ -663,6 +860,16 @@ class Navigation:
             # rospy.loginfo(f'idx: {self.currIdx+1}/{len(path.poses)}')
             
             self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
+            if self.avoid_mag > 0:
+                avoid_linear, avoid_angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
+                self.linear = max(0, self.linear - avoid_linear)
+                self.angular += avoid_angular
+            
+            # if self.avoid_mag > 20:
+            #     self.linear, self.angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
+            #     rospy.loginfo(f'avoiding: {self.linear:.3f}\t{self.angular:.3f}')
+            # else:
+                self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
             # rospy.loginfo(f'linear:{self.linear:.3f}\tangular:{self.angular:.3f}')
 
             # move robot
@@ -673,30 +880,6 @@ class Navigation:
                 rospy.signal_shutdown("Navigation timeout")
 
         rospy.signal_shutdown("Finished Cleanly")
-
-# class PIDController:
-#     def __init__(self, kp, ki, kd, output_limits=None):
-#         self.kp = kp
-#         self.ki = ki
-#         self.kd = kd
-#         self.output_limits = output_limits
-#         self.last_error = 0.0
-#         self.integral = 0.0
-
-#     def update(self, error, dt):
-        derivative = (error - self.last_error) / dt if (dt is not None and dt != 0) else 0
-        self.integral += error * dt if dt is not None else 0
-        self.last_error = error
-
-        output = self.kp * error + self.ki * self.integral + self.kd * derivative
-
-        if self.output_limits:
-            output = np.clip(output, self.output_limits[0], self.output_limits[1])
-            if self.integral > 0 and output == self.output_limits[1]:
-                self.integral = 0
-            elif self.integral < 0 and output == self.output_limits[0]:
-                self.integral = 0
-        return output
 
 class PIDController:
     def __init__(self, kp, ki, kd, output_limits=None, min_output=None):
@@ -709,12 +892,14 @@ class PIDController:
         self.integral = 0.0
 
     def update(self, error, dt):
+        if error is None:
+            return 0
         derivative = (error - self.last_error) / dt if (dt is not None and dt != 0) else 0
         self.integral += error * dt if dt is not None else 0
         self.last_error = error
 
         output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        # rospy.loginfo(f'error: {error:.2f}, integral: {self.integral:.2f}, derivative: {derivative:.2f}, output: {output:.2f}')
+        rospy.loginfo(f'error: {error:.2f}, integral: {self.integral:.2f}, derivative: {derivative:.2f}, output: {output:.2f}')
 
         if self.output_limits:
             output = np.clip(output, self.output_limits[0], self.output_limits[1])

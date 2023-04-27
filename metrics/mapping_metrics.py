@@ -9,7 +9,7 @@ def area_from_pgm(map_name: str):
     import os
 
     # specify file paths by map name, make sure your map files are in ../maps folder
-    map_dir_path = os.path.dirname(__file__) + '/../maps/'
+    map_dir_path = os.path.dirname(__file__) + '../maps/'
     map_pgm_path = map_dir_path + map_name + '.pgm'
     map_yaml_path = map_dir_path + map_name + '.yaml'
 
@@ -63,15 +63,15 @@ class Coverage:
 
 if __name__ == '__main__':
     # Example code to get the area statically from .pgm and .yaml files
-    # map_name = 'map'
-    # area = area_from_pgm(map_name)
-    # print(f'Map area is {area} m2.')
+    map_name = 'map'
+    area = area_from_pgm(map_name)
+    print(f'Map area is {area} m2.')
 
     # Code to give out real-time coverage rate while you map the environment
-    try:
-        coverage_node = Coverage()
-    except rospy.ROSInterruptException:
-        pass
-    finally:
-        rospy.loginfo(f'Your final coverage rate is %.1f%%', coverage_node.coverage_rate * 100)
+    # try:
+    #     coverage_node = Coverage()
+    # except rospy.ROSInterruptException:
+    #     pass
+    # finally:
+    #     rospy.loginfo(f'Your final coverage rate is %.1f%%', coverage_node.coverage_rate * 100)
 
