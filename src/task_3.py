@@ -412,14 +412,14 @@ class Navigation:
     def __init__(self, node_name='navigation'):
         # ROS node initialization
         rospy.init_node(node_name, anonymous=True)
-        self.rate = rospy.Rate(50)
+        self.rate = rospy.Rate(20)
         # Subscribers
         rospy.Subscriber('/move_base_simple/goal', PoseStamped, self.__goal_pose_cbk, queue_size=1)
         rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, self.__ttbot_pose_cbk, queue_size=10)
         rospy.Subscriber('/odom', Odometry, self.__odom_cbk)
         rospy.Subscriber('/scan', LaserScan, self.__scan_cbk)
-        rospy.Timer(rospy.Duration(0.01), self.__timer_cbk)
-        rospy.Timer(rospy.Duration(0.01), self.__timer2_cbk)
+        rospy.Timer(rospy.Duration(0.1), self.__timer_cbk)
+        rospy.Timer(rospy.Duration(0.1), self.__timer2_cbk)
         
         # Publishers
         self.path_pub = rospy.Publisher('global_plan', Path, queue_size=2)
@@ -460,6 +460,8 @@ class Navigation:
         self.distance_pid = PIDController(0.8,0.1,0.4,[-1.1,1.1], 0.3)
         # self.heading_pid = PIDController(3,0,0.3, [-2,2])
         # self.distance_pid = PIDController(0.5,0,0.1,[-0.5,0.5], 0.2)
+        # self.heading_pid = PIDController(2,0, 4, [-2,2])
+        # self.distance_pid = PIDController(0.8,0,0.1,[-0.8,0.8], 0.3)
         
         self.avoid_heading_pid = PIDController(2.5,0, 0.01, [-2.5,2.5])# PIDController(3,0,0.2, [-3,3])
         self.avoid_velocity_pid = PIDController(0.8,0,0,[-5,5]) #PIDController(1,0,0.1, [-2,2])
@@ -571,7 +573,7 @@ class Navigation:
         ranges = np.array(laser_scan.ranges)
         angles = np.array([laser_scan.angle_min + i * laser_scan.angle_increment for i in range(len(laser_scan.ranges))])
 
-        valid_indices = np.logical_and(np.isfinite(ranges), ranges <= 2, ranges >= 0.25)
+        valid_indices = np.logical_and(np.isfinite(ranges), ranges <= 0.4, ranges >= 0.25)
         valid_ranges = ranges[valid_indices]
         valid_angles = angles[valid_indices]
 
@@ -606,8 +608,8 @@ class Navigation:
         self.vector_pub.publish(p)
         # rospy.loginfo(f'{magnitude:.2f} ')
         tt = self.ttbot_pose.pose.position
-        self.avoid_mag = magnitude if self.make_cond(self.ttbot_pose) else 0
-        self.avoid_angle = direction_angle if self.make_cond(self.ttbot_pose) else 0
+        self.avoid_mag = magnitude # if self.make_cond(self.ttbot_pose) else 0
+        self.avoid_angle = direction_angle # if self.make_cond(self.ttbot_pose) else 0
         # return magnitude, direction_angle
 
     
@@ -834,6 +836,7 @@ class Navigation:
         path = None
         old_goal_pose = None
         start_time = time.time()
+        
         while not rospy.is_shutdown():
             self.rate.sleep()
 
@@ -841,6 +844,8 @@ class Navigation:
             if not self.confident:
                 self.move_ttbot(0, 1.5)
                 continue
+            
+            
             
             # if the goal_pose has changed, replan A*
             if self.goal_pose != old_goal_pose:
@@ -859,17 +864,26 @@ class Navigation:
             current_goal = path.poses[self.currIdx]
             # rospy.loginfo(f'idx: {self.currIdx+1}/{len(path.poses)}')
             
+            
+                
             self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
-            if self.avoid_mag > 0:
-                avoid_linear, avoid_angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
-                self.linear = max(0, self.linear - avoid_linear)
-                self.angular += avoid_angular
+            if self.avoid_mag > 20:
+                rospy.loginfo(f'avoiding... {self.avoid_mag:.3f} {self.avoid_angle*180/np.pi:.3f}')
+                # if self.avoid_angle > 315/360*np.pi or self.avoid_angle < np.pi/4:
+                #     self.move_ttbot(0, 0)
+                # else:
+                #     self.move_ttbot(1.5, 0)
+                # continue
+                
+                # avoid_linear, avoid_angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
+                # self.linear = max(0, self.linear - avoid_linear)
+                # self.angular += avoid_angular
             
             # if self.avoid_mag > 20:
             #     self.linear, self.angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
             #     rospy.loginfo(f'avoiding: {self.linear:.3f}\t{self.angular:.3f}')
             # else:
-                self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
+                # self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
             # rospy.loginfo(f'linear:{self.linear:.3f}\tangular:{self.angular:.3f}')
 
             # move robot
@@ -899,7 +913,7 @@ class PIDController:
         self.last_error = error
 
         output = self.kp * error + self.ki * self.integral + self.kd * derivative
-        rospy.loginfo(f'error: {error:.2f}, integral: {self.integral:.2f}, derivative: {derivative:.2f}, output: {output:.2f}')
+        # rospy.loginfo(f'error: {error:.2f}, integral: {self.integral:.2f}, derivative: {derivative:.2f}, output: {output:.2f}')
 
         if self.output_limits:
             output = np.clip(output, self.output_limits[0], self.output_limits[1])
