@@ -869,11 +869,11 @@ class Navigation:
             self.linear, self.angular = self.pid_controller(self.ttbot_pose, current_goal)
             if self.avoid_mag > 20:
                 rospy.loginfo(f'avoiding... {self.avoid_mag:.3f} {self.avoid_angle*180/np.pi:.3f}')
-                # if self.avoid_angle > 315/360*np.pi or self.avoid_angle < np.pi/4:
-                #     self.move_ttbot(0, 0)
-                # else:
-                #     self.move_ttbot(1.5, 0)
-                # continue
+                if self.avoid_angle > 315/360*np.pi or self.avoid_angle < np.pi/4:
+                    self.move_ttbot(0, 0)
+                else:
+                    self.move_ttbot(1.5, 0)
+                continue
                 
                 # avoid_linear, avoid_angular = self.avoid_pid(self.avoid_mag, self.avoid_angle)
                 # self.linear = max(0, self.linear - avoid_linear)
